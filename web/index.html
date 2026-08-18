@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vault</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🗂️</text></svg>">
+</head>
+<body>
+
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="sidebar-marque">
+      <span class="marque-point"></span>
+      <span>VAULT</span>
+    </div>
+
+    <nav class="sidebar-nav">
+      <p class="nav-titre">Workspace</p>
+      <a class="nav-lien" href="#/dashboard"><span class="nav-ico">◆</span>Dashboard</a>
+      <a class="nav-lien" href="#/inbox"><span class="nav-ico">⬒</span>Inbox<span class="nav-pastille" data-compteur="inbox"></span></a>
+      <a class="nav-lien" href="#/tasks"><span class="nav-ico">☰</span>Tâches<span class="nav-pastille" data-compteur="taches"></span></a>
+      <a class="nav-lien" href="#/projects"><span class="nav-ico">▣</span>Projets<span class="nav-pastille" data-compteur="projets"></span></a>
+      <a class="nav-lien" href="#/collaborators"><span class="nav-ico">◉</span>Collaborateurs</a>
+
+      <p class="nav-titre">Système</p>
+      <a class="nav-lien" href="#/activity"><span class="nav-ico">↻</span>Activité</a>
+      <a class="nav-lien" href="#/graph"><span class="nav-ico">⁙</span>Graph</a>
+      <a class="nav-lien" href="#/search"><span class="nav-ico">⌕</span>Recherche</a>
+    </nav>
+
+    <div class="actions-rapides">
+      <button class="btn btn-primaire btn-plein" data-action="nouvelle-tache">+ Nouvelle tâche</button>
+      <button class="btn btn-plein" data-action="nouveau-projet">+ Projet</button>
+      <button class="btn btn-plein" data-action="capture">⚡ Capture rapide</button>
+    </div>
+
+    <div class="sidebar-pied">
+      <button class="btn-theme" id="bascule-theme" type="button" title="Changer de thème">☾</button>
+      <span class="pied-info" id="pied-info">—</span>
+    </div>
+  </aside>
+
+  <div class="principal">
+    <header class="topbar">
+      <div class="recherche-globale">
+        <span class="recherche-ico">⌕</span>
+        <input type="search" id="recherche-topbar" placeholder="Rechercher dans tout le Vault…" autocomplete="off">
+        <kbd>Ctrl K</kbd>
+      </div>
+      <button class="btn-actualiser" id="btn-actualiser" type="button" title="Relire le Vault">⟳</button>
+    </header>
+
+    <main class="contenu" id="contenu">
+      <div class="chargement">Lecture du Vault…</div>
+    </main>
+  </div>
+
+</div>
+
+<div class="palette-fond" id="palette-fond" hidden>
+  <div class="palette">
+    <input type="search" id="palette-champ" placeholder="Rechercher une tâche, un projet, quelqu'un…" autocomplete="off">
+    <div class="palette-resultats" id="palette-resultats"></div>
+  </div>
+</div>
+
+<div class="modale-fond" id="modale-fond" hidden>
+  <div class="modale" role="dialog" aria-modal="true">
+    <div class="modale-tete">
+      <h2 class="modale-titre" id="modale-titre">Titre</h2>
+      <button class="modale-fermer" id="modale-fermer" type="button" aria-label="Fermer">✕</button>
+    </div>
+    <form id="modale-form">
+      <div class="modale-corps" id="modale-corps"></div>
+      <div class="modale-pied">
+        <button class="btn" type="button" id="modale-annuler">Annuler</button>
+        <button class="btn btn-primaire" type="submit" id="modale-valider">Créer</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
