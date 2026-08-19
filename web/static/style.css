@@ -921,7 +921,22 @@ p .sep { margin: 0 6px; opacity: .45; }
   color: var(--texte-faible);
 }
 
-.zone-defilante { max-height: 460px; overflow-y: auto; }
+/* La carte voisine (propriétés + liens) fixe souvent la hauteur de
+   la ligne. Sans ces trois règles, le texte s'arrête à 460 px et
+   laisse un bloc vide sous lui : la zone doit occuper toute la
+   hauteur que la grille lui donne, et ne défiler qu'au-delà.
+   `min-height: 0` est obligatoire — sans lui, un enfant flex refuse
+   de rétrécir sous sa hauteur de contenu et le défilement ne part
+   jamais. */
+.carte:has(> .zone-defilante) {
+  display: flex;
+  flex-direction: column;
+  min-height: 460px;
+}
+
+.carte > .zone-defilante { flex: 1; }
+
+.zone-defilante { min-height: 0; overflow-y: auto; }
 
 /* =====================================================
    Collaborateurs

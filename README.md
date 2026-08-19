@@ -10,6 +10,32 @@ un fichier entier. Rien n'y est jamais supprimé.
 NAVIGATEUR  →  API FastAPI  →  Services / Repository  →  Vault Writer  →  OBSIDIAN
 ```
 
+## État : V1 terminée
+
+Cette version est **complète et utilisable au quotidien**. Les phases 1
+à 5 du cahier des charges sont couvertes, le §16 (connaissances, notes
+de projet, journal) est branché, et 546 tests passent.
+
+La prochaine étape prévue est la **commande vocale** — piloter la
+capture et la navigation à la voix, sans passer par le clavier. Elle
+n'est pas commencée ; elle viendra après une période d'usage réel de
+cette V1.
+
+### Ce dépôt est public, le Vault ne l'est pas
+
+L'application se connecte à un **Vault Obsidian privé**, qui n'est pas
+distribué avec elle et ne le sera pas. Ce dépôt ne contient que le
+code : aucune note, aucune donnée personnelle, aucun contenu du Vault.
+
+Le chemin du Vault se configure par `OBSIDIAN_VAULT_PATH` (voir
+[Configuration](#configuration)). Sans Vault en face, l'application
+démarre mais n'affiche rien — elle n'est pas autonome, elle est une
+interface **au-dessus** d'un Vault existant.
+
+L'écoute reste bouclée sur `127.0.0.1` et l'API n'a aucune
+authentification : elle est conçue pour tourner en local, sur la
+machine qui héberge le Vault, et pour rien d'autre.
+
 ## Lancer
 
 ```bash
@@ -514,11 +540,26 @@ dessin le jour où la base sera trop fournie pour rester lisible.
 
 ## Ce qui reste à faire
 
-Cette version couvre les **phases 1 à 5** du cahier des charges
-(`03-Documentation/architecture_obsidian_web_app.md`).
+La V1 est close. Ce qui suit n'est pas un reliquat mais la suite
+prévue, à ouvrir après une période d'usage réel.
 
-Le **§16** s'y ajoute : la base de connaissances, les notes de projet
-et le journal sont branchés.
+### Prochaine étape — la commande vocale
+
+Piloter l'application à la voix : dicter une capture rapide, ajouter
+une ligne au journal, ouvrir une fiche, cocher un point — sans
+clavier. C'est le seul chantier structurant de la V2, et il n'est pas
+commencé.
+
+Deux contraintes le cadrent d'avance, héritées du reste du projet :
+
+- **la transcription doit rester locale**, ou passer par un service
+  choisi explicitement. Le Vault contient des données personnelles ;
+  envoyer un flux audio à un tiers par défaut contredirait le
+  bouclage sur `127.0.0.1` ;
+- **la voix ne décide rien seule.** Une capture dictée part dans
+  `_Inbox` comme une capture écrite. Le tri reste un geste conscient,
+  et une commande vocale mal comprise ne doit jamais déplacer un
+  fichier ni changer un statut sans confirmation.
 
 ### Ensuite
 
