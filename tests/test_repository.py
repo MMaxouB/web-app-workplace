@@ -81,6 +81,14 @@ def test_fiches_rangees_selon_leur_statut(
 
             reel = str(fiche.path.parent.relative_to(VAULT_PATH))
 
+            # `_Inbox` est une exception voulue : une capture rapide
+            # est « active » dès sa création, mais reste dans l'Inbox
+            # tant que son projet et sa priorité n'ont pas été
+            # choisis. C'est ce décalage qui signale qu'elle est à
+            # trier — voir Task.is_inbox.
+            if reel.endswith("_Inbox"):
+                continue
+
             if reel != attendu:
                 fautifs.append(
                     f"{fiche.path.name} : {reel} "
