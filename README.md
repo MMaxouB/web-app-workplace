@@ -192,6 +192,8 @@ Markdown. Trois tests couvrent ce point.
 
 ## Interface
 
+![alt text](image.png)
+
 - **Dashboard** — compteurs, progression, échéances, santé, à faire maintenant, répartitions
 - **Inbox** — captures à trier, tâches sans projet, tâches sans échéance
 - **Tâches** — trois vues : liste filtrable, kanban, calendrier
