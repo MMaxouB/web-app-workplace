@@ -434,13 +434,13 @@ function camembert(entrees, { taille = 168, epaisseur = 26, teinte, centre } = {
     </div>`;
 }
 
-function barreProgression(progression, grande = false) {
+function barreProgression(progression, grande = false, unite = "tâches") {
   const termine = progression.pourcentage >= 100;
   return `
     <div class="progression-grande">
       <div class="progression-chiffres">
         <span class="progression-pct">${progression.pourcentage}%</span>
-        <span class="progression-detail">${progression.termine} / ${progression.total} tâches</span>
+        <span class="progression-detail">${progression.termine} / ${progression.total} ${unite}</span>
       </div>
       <div class="barre ${grande ? "grande" : ""}">
         <div class="barre-remplie ${termine ? "termine" : ""}" style="width:${progression.pourcentage}%"></div>
@@ -1276,10 +1276,21 @@ async function pageProjet(id) {
       </section>
 
       <section class="carte">
-        <h2 class="carte-titre">Note du projet</h2>
+        <h2 class="carte-titre">Fiche du projet</h2>
         <div class="markdown zone-defilante">${rendreMarkdown(p.body)}</div>
       </section>
-    </div>`;
+    </div>
+
+    <section class="groupe-resultats">
+      <h2 class="carte-titre">Notes rattachées — ${p.notes.length}</h2>
+      ${
+        p.notes.length
+          ? `<div class="grille-notes">${p.notes.map(carteNote).join("")}</div>`
+          : `<p class="vide">Aucune note pour ce projet. Les notes portent les
+               points qu'on ne veut pas perdre sans en faire un suivi ; elles se
+               créent dans Obsidian avec <code>template-note.md</code>.</p>`
+      }
+    </section>`;
 }
 
 async function pageCollaborateurs() {
@@ -1410,6 +1421,715 @@ async function pageCollaborateur(id) {
     </section>`;
 }
 
+/* =====================================================
+   Connaissances (§16)
+   =====================================================
+   Ici le dossier dit le sujet, jamais l'avancement : la navigation
+   descend donc `domaine → sujet`, et ce sont `categorie` et
+   `maturite` qui filtrent. Les tags, eux, traversent l'arborescence
+   — c'est leur raison d'être.
+
+   Les compteurs de l'arborescence, des catégories et des tags
+   portent toujours sur la base entière, jamais sur le résultat
+   filtré : un filtre qui vide les autres filtres enferme.
+   ===================================================== */
+
+const MATURITES = {
+  graine:    { libelle: "Graine",    icone: "🌱", teinte: "neutre" },
+  brouillon: { libelle: "Brouillon", icone: "🪴", teinte: "high" },
+  stable:    { libelle: "Stable",    icone: "🌳", teinte: "low" },
+};
+
+const CATEGORIES = {
+  concept: "Concept",
+  technique: "Technique",
+  outil: "Outil",
+  langage: "Langage",
+  architecture: "Architecture",
+  guide: "Guide",
+  reference: "Référence",
+  writeup: "Writeup",
+};
+
+function badgeMaturite(maturite) {
+  const connue = MATURITES[(maturite || "").toLowerCase()];
+
+  if (!connue) return `<span class="badge badge-neutre">${echapper(maturite || "—")}</span>`;
+
+  return `<span class="badge badge-${connue.teinte}">${connue.icone} ${connue.libelle}</span>`;
+}
+
+function libelleCategorie(categorie) {
+  return CATEGORIES[(categorie || "").toLowerCase()] || categorie || "—";
+}
+
+const FILTRES_SAVOIRS = { domaine: "", sujet: "", categorie: "", maturite: "", tag: "" };
+
+function reinitialiserSavoirs() {
+  Object.keys(FILTRES_SAVOIRS).forEach((cle) => (FILTRES_SAVOIRS[cle] = ""));
+}
+
+function cheminSavoir(k) {
+  return k.sujet
+    ? `${echapper(k.domaine)} <span class="sep">›</span> ${echapper(k.sujet)}`
+    : echapper(k.domaine);
+}
+
+function carteSavoir(k) {
+  return `
+    <a class="savoir" href="#/knowledge/${k.id}">
+      <div class="savoir-corps">
+        <div class="savoir-nom">${echapper(k.name)}</div>
+        <div class="savoir-meta">
+          ${cheminSavoir(k)}<span class="sep">·</span>${echapper(libelleCategorie(k.categorie))}
+        </div>
+        ${
+          k.tags.length
+            ? `<div class="etiquettes">${k.tags
+                .map((t) => `<span class="etiquette">#${echapper(t)}</span>`)
+                .join("")}</div>`
+            : ""
+        }
+      </div>
+      <div class="savoir-fin">${badgeMaturite(k.maturite)}</div>
+    </a>`;
+}
+
+async function pageConnaissances() {
+  const parametres = new URLSearchParams();
+
+  Object.entries(FILTRES_SAVOIRS).forEach(([cle, valeur]) => {
+    if (valeur) parametres.set(cle, valeur);
+  });
+
+  const d = await api(`/api/knowledge?${parametres}`);
+
+  const tete = `
+    <div class="page-tete">
+      <div>
+        <h1 class="page-titre">Connaissances</h1>
+        <p class="page-sous-titre">
+          ${d.total === d.total_base
+            ? `${d.total_base} note${d.total_base > 1 ? "s" : ""}`
+            : `${d.total} sur ${d.total_base}`}
+        </p>
+      </div>
+    </div>`;
+
+  if (!d.total_base) {
+    return `${tete}
+      <section class="carte">
+        <p class="vide">
+          <strong>La base est vide.</strong><br>
+          Les connaissances se créent dans Obsidian, avec le template
+          <code>99-Templates/template-connaissance.md</code> : il pose le
+          frontmatter, range le fichier dans le bon dossier et propose le
+          squelette de la catégorie choisie.<br>
+          Elles apparaîtront ici toutes seules — le Vault est surveillé.
+        </p>
+      </section>`;
+  }
+
+  const actif = (condition) => (condition ? "actif" : "");
+
+  const arbre = `
+    <button class="rameau tout ${actif(!FILTRES_SAVOIRS.domaine)}"
+            data-savoir-domaine="" data-savoir-sujet="">
+      <span>Tous les domaines</span><span class="branche-compte">${d.total_base}</span>
+    </button>
+    ${d.arborescence
+      .map(
+        (b) => `
+      <div class="branche">
+        <button class="branche-titre ${actif(FILTRES_SAVOIRS.domaine === b.domaine && !FILTRES_SAVOIRS.sujet)}"
+                data-savoir-domaine="${echapper(b.domaine)}" data-savoir-sujet="">
+          <span>${echapper(b.domaine)}</span><span class="branche-compte">${b.total}</span>
+        </button>
+        ${b.sujets
+          .filter((s) => s.sujet)
+          .map(
+            (s) => `
+          <button class="rameau ${actif(FILTRES_SAVOIRS.domaine === b.domaine && FILTRES_SAVOIRS.sujet === s.sujet)}"
+                  data-savoir-domaine="${echapper(b.domaine)}" data-savoir-sujet="${echapper(s.sujet)}">
+            <span>${echapper(s.sujet)}</span><span class="branche-compte">${s.total}</span>
+          </button>`
+          )
+          .join("")}
+      </div>`
+      )
+      .join("")}`;
+
+  const menu = (champ, vide, entrees, libelle) => `
+    <select data-savoir-filtre="${champ}">
+      <option value="">${vide}</option>
+      ${entrees
+        .map(
+          (e) =>
+            `<option value="${echapper(e.libelle)}" ${e.libelle === FILTRES_SAVOIRS[champ] ? "selected" : ""}>
+               ${echapper(libelle(e.libelle))} (${e.valeur})
+             </option>`
+        )
+        .join("")}
+    </select>`;
+
+  return `
+    ${tete}
+
+    <div class="grille-savoirs">
+      <aside class="carte arbre-savoirs">
+        <h2 class="carte-titre">Arborescence</h2>
+        ${arbre}
+      </aside>
+
+      <div>
+        <div class="filtres">
+          ${menu("categorie", "Toutes sortes", d.categories, libelleCategorie)}
+          ${menu("maturite", "Toutes maturités", d.maturites, (v) =>
+            MATURITES[v] ? `${MATURITES[v].icone} ${MATURITES[v].libelle}` : v
+          )}
+          ${
+            FILTRES_SAVOIRS.domaine || FILTRES_SAVOIRS.categorie ||
+            FILTRES_SAVOIRS.maturite || FILTRES_SAVOIRS.tag
+              ? `<button class="btn" data-savoir-reset>Tout afficher</button>`
+              : ""
+          }
+        </div>
+
+        ${
+          d.tags.length
+            ? `<div class="nuage-tags">
+                 ${d.tags
+                   .map(
+                     (t) =>
+                       `<button class="puce-tag ${actif(FILTRES_SAVOIRS.tag === t.libelle)}"
+                                data-savoir-tag="${echapper(t.libelle)}">#${echapper(t.libelle)}
+                          <span class="puce-compte">${t.valeur}</span>
+                        </button>`
+                   )
+                   .join("")}
+               </div>`
+            : ""
+        }
+
+        ${
+          d.items.length
+            ? `<div class="liste-savoirs">${d.items.map(carteSavoir).join("")}</div>`
+            : `<p class="vide">Aucune note ne correspond à ces filtres.</p>`
+        }
+      </div>
+    </div>`;
+}
+
+function brancherConnaissances() {
+  $$("[data-savoir-domaine]").forEach((bouton) =>
+    bouton.addEventListener("click", () => {
+      FILTRES_SAVOIRS.domaine = bouton.dataset.savoirDomaine;
+      FILTRES_SAVOIRS.sujet = bouton.dataset.savoirSujet;
+      rendre();
+    })
+  );
+
+  $$("[data-savoir-filtre]").forEach((select) =>
+    select.addEventListener("change", () => {
+      FILTRES_SAVOIRS[select.dataset.savoirFiltre] = select.value;
+      rendre();
+    })
+  );
+
+  $$("[data-savoir-tag]").forEach((bouton) =>
+    bouton.addEventListener("click", () => {
+      // Recliquer sur le tag actif le retire : c'est un interrupteur,
+      // pas un aller simple.
+      const tag = bouton.dataset.savoirTag;
+      FILTRES_SAVOIRS.tag = FILTRES_SAVOIRS.tag === tag ? "" : tag;
+      rendre();
+    })
+  );
+
+  // Un tag cliqué depuis une fiche ramène à la liste, filtrée sur
+  // lui : c'est la navigation transversale que les tags existent
+  // pour rendre possible.
+  $$("[data-tag-lien]").forEach((lien) =>
+    lien.addEventListener("click", () => {
+      reinitialiserSavoirs();
+      FILTRES_SAVOIRS.tag = lien.dataset.tagLien;
+    })
+  );
+
+  $$("[data-savoir-reset]").forEach((bouton) =>
+    bouton.addEventListener("click", () => {
+      reinitialiserSavoirs();
+      rendre();
+    })
+  );
+}
+
+async function pageConnaissance(id) {
+  const k = await api(`/api/knowledge/${id}`);
+
+  const ligne = (cle, valeur) =>
+    `<div class="propriete"><dt>${cle}</dt><dd>${valeur}</dd></div>`;
+
+  const lignes = [
+    ["Sorte", `<span class="etiquette">${echapper(libelleCategorie(k.categorie))}</span>`],
+    ["Maturité", badgeMaturite(k.maturite)],
+    ["Domaine", echapper(k.domaine || "—")],
+    ["Sujet", echapper(k.sujet || "—")],
+    [
+      "Tags",
+      k.tags.length
+        ? `<div class="etiquettes">${k.tags
+            .map(
+              (t) =>
+                `<a class="etiquette" href="#/knowledge" data-tag-lien="${echapper(t)}">#${echapper(t)}</a>`
+            )
+            .join("")}</div>`
+        : "—",
+    ],
+    [
+      "Source",
+      k.source
+        ? /^https?:/i.test(k.source)
+          ? `<a href="${echapper(k.source)}" target="_blank" rel="noopener" style="color:var(--accent)">${echapper(k.source)}</a>`
+          : echapper(k.source)
+        : "—",
+    ],
+    ["Créée le", echapper(k.created || "—")],
+    ["Revue le", echapper(k.mis_a_jour || "—")],
+    ["Dossier", `<span class="etiquette">${echapper(k.dossier)}</span>`],
+  ];
+
+  return `
+    <a class="retour" href="#/knowledge">← Connaissances</a>
+
+    <div class="fiche-tete">
+      <div class="fiche-titre-ligne">
+        <h1 class="fiche-titre">${echapper(k.name)}</h1>
+        ${badgeMaturite(k.maturite)}
+        <span class="etiquette">${echapper(libelleCategorie(k.categorie))}</span>
+      </div>
+      <p class="page-sous-titre">${cheminSavoir(k)}</p>
+    </div>
+
+    ${
+      k.range_correctement === false && k.domaine_declare
+        ? `<div class="avertissement">
+             Cette note annonce le domaine <strong>${echapper(k.domaine_declare)}</strong>
+             mais elle est rangée dans <code>${echapper(k.dossier)}</code>.
+             Elle reste lisible ; elle sera simplement introuvable là où on la cherchera.
+           </div>`
+        : ""
+    }
+
+    <div class="grille-2">
+      <section class="carte">
+        <h2 class="carte-titre">Contenu de la note</h2>
+        <div class="markdown zone-defilante">${rendreMarkdown(k.body)}</div>
+      </section>
+
+      <div class="pile">
+        <section class="carte">
+          <h2 class="carte-titre">Propriétés</h2>
+          <dl class="proprietes">
+            ${lignes.map(([cle, valeur]) => ligne(cle, valeur)).join("")}
+          </dl>
+          <p class="carte-aparte">
+            Ces champs se modifient dans Obsidian : le template les pose, et
+            le dossier dépend du domaine.
+          </p>
+        </section>
+
+        <section class="carte">
+          <h2 class="carte-titre">Liens — ${k.liens.length}</h2>
+          ${
+            k.liens.length
+              ? `<div class="liste-taches">${k.liens
+                  .map(
+                    (l) => `<a class="tache compacte" href="#/${TYPES_NOTE[l.type] || "task"}/${l.id}">
+                       <div class="tache-corps"><div class="tache-nom">${echapper(l.nom)}</div></div>
+                       <div class="tache-fin"><span class="etiquette">${echapper(LIBELLES_TYPE[l.type] || l.type)}</span></div>
+                     </a>`
+                  )
+                  .join("")}</div>`
+              : `<p class="vide">Cette note ne renvoie à aucune autre.</p>`
+          }
+          ${
+            k.liens_morts.length
+              ? `<p class="carte-aparte">Liens sans cible :
+                   ${k.liens_morts.map((c) => `<code>[[${echapper(c)}]]</code>`).join(" ")}</p>`
+              : ""
+          }
+        </section>
+      </div>
+    </div>`;
+}
+
+/* =====================================================
+   Notes de projet
+   =====================================================
+   Une note n'a ni statut ni échéance : son avancement se lit dans
+   ses cases cochées. Elles sont donc cochables là où on les lit, et
+   la carte se redessine seule — un rendu complet de la page ferait
+   sauter l'écran à chaque clic.
+   ===================================================== */
+
+function unitePoints(progression) {
+  return progression.total > 1 ? "points" : "point";
+}
+
+function listePoints(n) {
+  if (!n.points.length) {
+    return `<p class="vide">Aucun point à cocher dans cette note.</p>`;
+  }
+
+  return `<ul class="points">${n.points
+    .map(
+      (p) => `
+      <li class="point ${p.cochee ? "cochee" : ""}" style="--niveau:${Math.min(p.niveau, 8)}">
+        <button class="case" type="button" role="checkbox" aria-checked="${p.cochee}"
+                data-point="${p.index}" data-cochee="${p.cochee}"
+                data-texte="${echapper(p.texte)}"
+                title="${p.cochee ? "Décocher" : "Cocher"}">${p.cochee ? "☑" : "☐"}</button>
+        <span class="point-texte">${enligne(p.texte)}</span>
+      </li>`
+    )
+    .join("")}</ul>`;
+}
+
+function corpsNote(n) {
+  return `
+    <div class="note-tete">
+      <a class="note-nom" href="#/note/${n.id}">${echapper(n.name)}</a>
+      ${n.sujet ? `<span class="note-sujet">${echapper(n.sujet)}</span>` : ""}
+      ${
+        n.progression.total
+          ? `<span class="note-compte">${n.progression.termine}/${n.progression.total}</span>`
+          : ""
+      }
+    </div>
+    ${n.progression.total ? barreProgression(n.progression, false, unitePoints(n.progression)) : ""}
+    ${listePoints(n)}`;
+}
+
+function carteNote(n) {
+  return `
+    <section class="carte note-carte" data-note="${n.id}" data-version="${n.version}">
+      ${corpsNote(n)}
+    </section>`;
+}
+
+async function pageNotes() {
+  const d = await api("/api/notes");
+
+  if (!d.total) {
+    return `
+      <div class="page-tete"><div><h1 class="page-titre">Notes</h1></div></div>
+      <section class="carte">
+        <p class="vide">
+          <strong>Aucune note de projet.</strong><br>
+          Elles se créent dans Obsidian, avec
+          <code>99-Templates/template-note.md</code> : il lit la liste des
+          projets dans le Vault, ce qui évite la faute de frappe qui
+          détache une note de son projet.
+        </p>
+      </section>`;
+  }
+
+  const groupes = new Map();
+
+  d.items.forEach((n) => {
+    const cle = n.project || "";
+    if (!groupes.has(cle)) groupes.set(cle, []);
+    groupes.get(cle).push(n);
+  });
+
+  // « Sans projet » ferme la marche : ce n'est pas un projet.
+  const ordre = [...groupes.keys()].sort((a, b) =>
+    a === "" ? 1 : b === "" ? -1 : a.localeCompare(b, "fr")
+  );
+
+  /* Les groupes viennent du champ `project` tel qu'il est écrit, pas
+     du rattachement calculé : c'est ce qui fait apparaître « Refonte
+     espace de trvail » juste à côté de « Refonte espace de travail ».
+     Le serveur, lui, dit si le nom retombe sur un vrai projet — et
+     c'est cette confrontation que les conventions confient à la web
+     app, Dataview ne sachant pas la faire. */
+  const introuvable = (projet) =>
+    projet && groupes.get(projet).some((n) => n.orpheline);
+
+  const points = d.items.reduce(
+    (total, n) => total + n.progression.restant,
+    0
+  );
+
+  return `
+    <div class="page-tete">
+      <div>
+        <h1 class="page-titre">Notes</h1>
+        <p class="page-sous-titre">
+          ${d.total} note${d.total > 1 ? "s" : ""} ·
+          ${points} point${points > 1 ? "s" : ""} à cocher
+          ${d.archivees ? ` · ${d.archivees} archivée${d.archivees > 1 ? "s" : ""} masquée${d.archivees > 1 ? "s" : ""}` : ""}
+        </p>
+      </div>
+    </div>
+
+    ${ordre
+      .map(
+        (projet) => `
+      <section class="groupe-resultats">
+        <h2 class="carte-titre">
+          ${projet ? echapper(projet) : "Sans projet"} — ${groupes.get(projet).length}
+          ${introuvable(projet) ? `<span class="alerte-groupe">aucun projet de ce nom</span>` : ""}
+        </h2>
+        <div class="grille-notes">${groupes.get(projet).map(carteNote).join("")}</div>
+      </section>`
+      )
+      .join("")}`;
+}
+
+async function pageNote(id) {
+  const n = await api(`/api/notes/${id}`);
+
+  return `
+    <a class="retour" href="#/notes">← Notes</a>
+
+    <div class="fiche-tete">
+      <div class="fiche-titre-ligne">
+        <h1 class="fiche-titre">${echapper(n.name)}</h1>
+        ${n.is_archived ? `<span class="badge badge-neutre">Archivée</span>` : ""}
+      </div>
+      <p class="page-sous-titre">
+        ${n.project ? echapper(n.project) : "Sans projet"}
+        ${n.orpheline ? `<span class="alerte-groupe">aucun projet de ce nom</span>` : ""}
+        ${n.sujet ? `<span class="sep">·</span>${echapper(n.sujet)}` : ""}
+        ${n.mis_a_jour ? `<span class="sep">·</span>modifiée le ${echapper(n.mis_a_jour)}` : ""}
+      </p>
+    </div>
+
+    <div class="grille-2">
+      <section class="carte note-carte" data-note="${n.id}" data-version="${n.version}">
+        <h2 class="carte-titre">Points</h2>
+        ${n.progression.total ? barreProgression(n.progression, true, unitePoints(n.progression)) : ""}
+        ${listePoints(n)}
+      </section>
+
+      <section class="carte">
+        <h2 class="carte-titre">Contenu de la note</h2>
+        <div class="markdown zone-defilante">${rendreMarkdown(n.body)}</div>
+      </section>
+    </div>`;
+}
+
+/** Rebranche les cases d'une carte de note, après un rendu partiel. */
+function brancherPoints(racine = contenu) {
+  $$(".note-carte", racine).forEach((carte) => {
+    $$(".case", carte).forEach((bouton) =>
+      bouton.addEventListener("click", () => basculerPoint(carte, bouton))
+    );
+  });
+}
+
+async function basculerPoint(carte, bouton) {
+  if (bouton.disabled) return;
+
+  bouton.disabled = true;
+  carte.classList.add("enregistrement");
+
+  try {
+    const donnees = await api(
+      `/api/notes/${carte.dataset.note}/points/${bouton.dataset.point}`,
+      {
+        method: "PATCH",
+        corps: {
+          cochee: bouton.dataset.cochee !== "true",
+          texte: bouton.dataset.texte,
+          version: Number(carte.dataset.version),
+        },
+      }
+    );
+
+    // Rendu partiel : la carte se redessine, le reste de l'écran ne
+    // bouge pas. Cocher trois points d'affilée ne doit pas faire
+    // sauter la page trois fois.
+    const titre = carte.querySelector(".carte-titre");
+
+    carte.dataset.version = donnees.version;
+
+    if (titre) {
+      carte.innerHTML =
+        titre.outerHTML +
+        (donnees.progression.total
+          ? barreProgression(donnees.progression, true, unitePoints(donnees.progression))
+          : "") +
+        listePoints(donnees);
+    } else {
+      carte.innerHTML = corpsNote(donnees);
+    }
+
+    brancherPoints(carte.parentElement || contenu);
+
+    (donnees.avertissements || []).forEach((message) =>
+      toast("Note enregistrée", message, "attention", 6000)
+    );
+  } catch (erreur) {
+    signalerErreur(erreur, "Point non modifié");
+    bouton.disabled = false;
+  } finally {
+    carte.classList.remove("enregistrement");
+  }
+}
+
+/* =====================================================
+   Journal
+   =====================================================
+   Le fichier est chronologique parce qu'on y écrit à la fin ;
+   l'écran montre d'abord ce qui vient de se passer. La capture est
+   posée en haut de la page : le geste doit tenir en trois secondes.
+   ===================================================== */
+
+function libelleJour(jour) {
+  if (!jour.date) return jour.titre;
+
+  const date = new Date(jour.date + "T00:00:00");
+
+  if (Number.isNaN(date.getTime())) return jour.titre;
+
+  const aujourdhui = new Date();
+  aujourdhui.setHours(0, 0, 0, 0);
+
+  const jours = Math.round((date - aujourdhui) / 86400000);
+
+  const complet = date.toLocaleDateString("fr-FR", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+
+  if (jours === 0) return `Aujourd'hui — ${complet}`;
+  if (jours === -1) return `Hier — ${complet}`;
+
+  return complet.charAt(0).toUpperCase() + complet.slice(1);
+}
+
+async function pageJournal() {
+  let d;
+
+  try {
+    d = await api("/api/journal");
+  } catch (erreur) {
+    if (erreur.statut !== 404) throw erreur;
+
+    return `
+      <div class="page-tete"><div><h1 class="page-titre">Journal</h1></div></div>
+      <section class="carte"><p class="vide">${echapper(erreur.message)}</p></section>`;
+  }
+
+  return `
+    <div class="page-tete">
+      <div>
+        <h1 class="page-titre">Journal</h1>
+        <p class="page-sous-titre">
+          ${d.total_lignes} ligne${d.total_lignes > 1 ? "s" : ""} sur
+          ${d.total_jours} jour${d.total_jours > 1 ? "s" : ""}
+          <span class="sep">·</span>${echapper(d.note)}.md
+        </p>
+      </div>
+    </div>
+
+    <section class="carte capture-journal">
+      <form id="form-journal" autocomplete="off">
+        <input type="text" id="ligne-journal"
+               placeholder="Une ligne, sans rien décider…" maxlength="500">
+        <button class="btn btn-primaire" type="submit">Ajouter</button>
+      </form>
+      <p class="carte-aparte">
+        La ligne rejoint la journée du jour, à la fin du fichier — exactement
+        où <kbd>Ctrl</kbd>+<kbd>Fin</kbd> amène le curseur dans Obsidian.
+      </p>
+    </section>
+
+    ${
+      d.jours.length
+        ? d.jours
+            .map(
+              (jour) => `
+      <section class="carte jour-journal">
+        <h2 class="carte-titre">${echapper(libelleJour(jour))}</h2>
+        ${
+          jour.lignes.length
+            ? `<ul class="lignes-journal">${jour.lignes
+                .map((l) => `<li>${enligne(l)}</li>`)
+                .join("")}</ul>`
+            : `<p class="vide">Rien ce jour-là.</p>`
+        }
+      </section>`
+            )
+            .join("")
+        : `<p class="vide">Le journal est vide.</p>`
+    }`;
+}
+
+function brancherJournal() {
+  const form = $("#form-journal");
+
+  if (!form) return;
+
+  form.addEventListener("submit", async (evenement) => {
+    evenement.preventDefault();
+
+    const champ = $("#ligne-journal");
+    const texte = champ.value.trim();
+
+    if (!texte) return;
+
+    champ.disabled = true;
+
+    try {
+      await api("/api/journal", { method: "POST", corps: { text: texte } });
+      champ.value = "";
+      await rendre();
+      $("#ligne-journal")?.focus();
+    } catch (erreur) {
+      signalerErreur(erreur, "Ligne non ajoutée");
+      champ.disabled = false;
+    }
+  });
+}
+
+/** Capture depuis n'importe quelle page, par la barre latérale. */
+async function noterAuJournal() {
+  const donnees = await ouvrirModale({
+    titre: "Noter au journal",
+    valider: "Ajouter",
+    champs: [
+      {
+        nom: "text",
+        libelle: "La ligne",
+        type: "textarea",
+        requis: true,
+        placeholder: "Ce qu'on n'a pas le temps de ranger.",
+      },
+    ],
+  });
+
+  if (!donnees) return;
+
+  try {
+    const resultat = await api("/api/journal", {
+      method: "POST",
+      corps: donnees,
+    });
+
+    toast("Noté", `Journal du ${resultat.jour}`);
+
+    if (cheminCourant() === "/journal") await rendre();
+  } catch (erreur) {
+    signalerErreur(erreur, "Ligne non ajoutée");
+  }
+}
+
 async function pageRecherche(requete) {
   if (!requete) {
     return `
@@ -1460,6 +2180,25 @@ async function pageRecherche(requete) {
             <div class="tache-corps"><div class="tache-nom">${echapper(c.name)}</div>
             <div class="tache-meta">${echapper(c.role || "—")}</div></div>
             <div class="tache-fin">${badgeStatut(c.status)}</div></a>`
+        )
+        .join("")}</div>`
+    )}
+
+    ${groupe(
+      "Connaissances",
+      r.knowledge,
+      `<div class="liste-savoirs">${r.knowledge.map(carteSavoir).join("")}</div>`
+    )}
+
+    ${groupe(
+      "Notes",
+      r.notes,
+      `<div class="liste-taches">${r.notes
+        .map(
+          (n) => `<a class="tache" href="#/note/${n.id}">
+            <div class="tache-corps"><div class="tache-nom">${echapper(n.name)}</div>
+            <div class="tache-meta">${echapper(n.project || "sans projet")}</div></div>
+            <div class="tache-fin"><span class="etiquette">${echapper(n.sujet || "note")}</span></div></a>`
         )
         .join("")}</div>`
     )}
@@ -1880,7 +2619,25 @@ const GENRES_ACTIVITE = {
 
 // Les routes des fiches sont au singulier (#/task/…), pas au
 // pluriel comme les listes : un lien au pluriel ne mène nulle part.
-const TYPES_NOTE = { task: "task", project: "project", collaborator: "collaborator" };
+/* Type d'une note -> segment d'URL de sa fiche. Les fiches sont au
+   singulier, les listes au pluriel : un lien au pluriel ne mène
+   nulle part. « knowledge » est invariable, sa fiche vit donc sous
+   le même mot que sa liste. */
+const TYPES_NOTE = {
+  task: "task",
+  project: "project",
+  collaborator: "collaborator",
+  knowledge: "knowledge",
+  note: "note",
+};
+
+const LIBELLES_TYPE = {
+  task: "Tâche",
+  project: "Projet",
+  collaborator: "Collaborateur",
+  knowledge: "Connaissance",
+  note: "Note",
+};
 
 let FILTRE_ACTIVITE = "changements";
 
@@ -2018,7 +2775,13 @@ function brancherActivite() {
    chaque visite.
    ===================================================== */
 
-const GRAPH = { largeur: 900, hauteur: 620, terminees: false, survole: null };
+const GRAPH = {
+  largeur: 900,
+  hauteur: 620,
+  terminees: false,
+  connaissances: true,
+  survole: null,
+};
 
 function simuler(noeuds, liens, { largeur, hauteur }) {
   const n = noeuds.length;
@@ -2116,6 +2879,8 @@ function simuler(noeuds, liens, { largeur, hauteur }) {
 function teinteNoeud(noeud) {
   if (noeud.type === "project") return "accent";
   if (noeud.type === "collaborator") return "accent2";
+  if (noeud.type === "knowledge") return "accent3";
+  if (noeud.type === "note") return "accent5";
 
   const p = (noeud.priorite || "").toLowerCase();
   return PRIORITES.includes(p) ? p : "neutre";
@@ -2124,13 +2889,19 @@ function teinteNoeud(noeud) {
 function rayonNoeud(noeud) {
   if (noeud.type === "project") return 13 + Math.min(noeud.poids, 8) * 1.6;
   if (noeud.type === "collaborator") return 11 + Math.min(noeud.poids, 6) * 1.2;
+  // Une connaissance pèse ce que pèsent ses liens : les notes pivots
+  // d'un domaine doivent se voir sans qu'on les cherche.
+  if (noeud.type === "knowledge") return 9 + Math.min(noeud.poids, 8) * 1.1;
   return 7;
 }
 
 async function pageGraph() {
-  const donnees = await api(
-    `/api/graph${GRAPH.terminees ? "?inclure_terminees=true" : ""}`
-  );
+  const parametres = new URLSearchParams();
+
+  if (GRAPH.terminees) parametres.set("inclure_terminees", "true");
+  if (!GRAPH.connaissances) parametres.set("inclure_connaissances", "false");
+
+  const donnees = await api(`/api/graph?${parametres}`);
 
   if (!donnees.noeuds.length) {
     return `<div class="page-tete"><div><h1 class="page-titre">Graph</h1></div></div>
@@ -2155,18 +2926,26 @@ async function pageGraph() {
         <p class="page-sous-titre">
           ${compte("project")} projets · ${compte("task")} tâches ·
           ${compte("collaborator")} collaborateurs ·
+          ${compte("knowledge")} connaissances · ${compte("note")} notes ·
           ${aretes.length} lien${aretes.length > 1 ? "s" : ""}
         </p>
       </div>
-      <button class="btn ${GRAPH.terminees ? "btn-primaire" : ""}" data-graph="terminees">
-        ${GRAPH.terminees ? "✓ " : ""}Inclure les terminées
-      </button>
+      <div class="actions-fiche">
+        <button class="btn ${GRAPH.terminees ? "btn-primaire" : ""}" data-graph="terminees">
+          ${GRAPH.terminees ? "✓ " : ""}Inclure les terminées
+        </button>
+        <button class="btn ${GRAPH.connaissances ? "btn-primaire" : ""}" data-graph="connaissances">
+          ${GRAPH.connaissances ? "✓ " : ""}Connaissances
+        </button>
+      </div>
     </div>
 
     <div class="graph-legende">
       <span class="legende-ligne"><span class="legende-pastille" style="background:var(--accent)"></span>Projet</span>
       <span class="legende-ligne"><span class="legende-pastille" style="background:var(--accent2)"></span>Collaborateur</span>
       <span class="legende-ligne"><span class="legende-pastille" style="background:var(--critical)"></span>Tâche (couleur = priorité)</span>
+      <span class="legende-ligne"><span class="legende-pastille" style="background:var(--accent3)"></span>Connaissance</span>
+      <span class="legende-ligne"><span class="legende-pastille" style="background:var(--accent5)"></span>Note</span>
       ${
         isoles.size
           ? `<span class="graph-note">${isoles.size} note${isoles.size > 1 ? "s" : ""} sans relation</span>`
@@ -2217,7 +2996,8 @@ function brancherGraph() {
 
   $$("[data-graph]").forEach((bouton) =>
     bouton.addEventListener("click", () => {
-      GRAPH.terminees = !GRAPH.terminees;
+      const cle = bouton.dataset.graph;
+      GRAPH[cle] = !GRAPH[cle];
       rendre();
     })
   );
@@ -2337,6 +3117,11 @@ const ROUTES = [
   [/^\/project\/(.+)$/,          (m) => pageProjet(m[1])],
   [/^\/collaborators$/,          () => pageCollaborateurs()],
   [/^\/collaborator\/(.+)$/,     (m) => pageCollaborateur(m[1])],
+  [/^\/knowledge$/,              () => pageConnaissances()],
+  [/^\/knowledge\/(.+)$/,        (m) => pageConnaissance(m[1])],
+  [/^\/notes$/,                  () => pageNotes()],
+  [/^\/note\/(.+)$/,             (m) => pageNote(m[1])],
+  [/^\/journal$/,                () => pageJournal()],
   [/^\/activity$/,               () => pageActivite()],
   [/^\/graph$/,                  () => pageGraph()],
   [/^\/search\/?(.*)$/,          (m) => pageRecherche(decodeURIComponent(m[1] || ""))],
@@ -2368,6 +3153,9 @@ async function rendre() {
     brancherCalendrier();
     brancherActivite();
     brancherGraph();
+    brancherConnaissances();
+    brancherPoints();
+    brancherJournal();
     brancherActions();
     majNavigation(chemin);
     return;
@@ -2449,6 +3237,7 @@ $$(".actions-rapides [data-action]").forEach((bouton) =>
       "nouvelle-tache": () => nouvelleTache(),
       "nouveau-projet": nouveauProjet,
       capture: captureRapide,
+      journal: noterAuJournal,
     };
     actions[bouton.dataset.action]?.();
   })
@@ -2526,6 +3315,8 @@ paletteChamp.addEventListener("input", () => {
         ...r.projects.map((p) => ({ nom: p.name, type: "Projet", lien: `#/project/${p.id}` })),
         ...r.tasks.map((t) => ({ nom: t.name, type: "Tâche", lien: `#/task/${t.id}` })),
         ...r.collaborators.map((c) => ({ nom: c.name, type: "Collaborateur", lien: `#/collaborator/${c.id}` })),
+        ...r.knowledge.map((k) => ({ nom: k.name, type: "Connaissance", lien: `#/knowledge/${k.id}` })),
+        ...r.notes.map((n) => ({ nom: n.name, type: "Note", lien: `#/note/${n.id}` })),
       ].slice(0, 30);
 
       paletteResultats.innerHTML = entrees.length

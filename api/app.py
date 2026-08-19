@@ -20,9 +20,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from api.schemas import (
+    case_to_dict,
     collaborator_to_dict,
     decode_id,
     encode_id,
+    knowledge_to_dict,
+    note_to_dict,
     progression_to_dict,
     project_to_dict,
     task_to_dict,
@@ -36,7 +39,15 @@ from core.obsidian.repository import (
     sort_tasks,
 )
 from core.obsidian.vault import ObsidianVault
-from core.services import analytics, historique
+from core.utils.text import normalize
+from core.services import (
+    analytics,
+    connaissances,
+    historique,
+    notes_projet,
+)
+from core.services.journal import JournalError, JournalService
+from core.utils.markdown import lire_liens
 from core.surveillance import SurveillantVault
 
 
@@ -126,6 +137,80 @@ def _tasks_of(collaborator_name: str, taches: list) -> list:
         for task in taches
         if same_reference(task.collaborator, collaborator_name)
     ]
+
+
+def _points_de(chemin: Path) -> list:
+    """Cases à cocher d'une note, ou liste vide si elle est illisible.
+
+    Une note abîmée ne doit pas vider tout l'écran : elle apparaît
+    sans avancement, ce qui se voit et se corrige.
+    """
+    try:
+        return notes_projet.points(vault.read_body(chemin))
+    except (OSError, ValueError):
+        logger.warning("Points illisibles : %s", chemin)
+
+        return []
+
+
+def _note_avec_points(note, projets: list | None = None) -> dict:
+    """Une note de projet, avec ses points et leur avancement.
+
+    `projets` sert à dire si le champ `project` retombe sur un vrai
+    projet du Vault. Les conventions confient ce contrôle à la web
+    app : Dataview ne sait pas confronter deux ensembles de notes, et
+    c'est le seul garde-fou contre la faute de frappe qui détache
+    silencieusement une note de son projet.
+    """
+    cases = _points_de(note.path)
+
+    donnees = note_to_dict(note, VAULT_PATH)
+
+    donnees["points"] = [case_to_dict(case) for case in cases]
+    donnees["progression"] = progression_to_dict(
+        notes_projet.progression(cases)
+    )
+
+    if projets is None:
+        projets = repository.get_projects()
+
+    donnees["orpheline"] = bool(
+        note.project
+        and not any(belongs_to(note, projet) for projet in projets)
+    )
+
+    return donnees
+
+
+def _index_des_notes(contenu) -> dict[str, dict]:
+    """Nom de fichier normalisé → de quoi fabriquer un lien.
+
+    Sert à résoudre les `[[liens]]` d'Obsidian, qui désignent une
+    note par son nom de fichier. La comparaison est normalisée —
+    sans accents, sans casse — comme partout ailleurs.
+    """
+    index: dict[str, dict] = {}
+
+    lots = (
+        (contenu.projects, "project"),
+        (contenu.tasks, "task"),
+        (contenu.collaborators, "collaborator"),
+        (contenu.knowledge, "knowledge"),
+        (contenu.notes, "note"),
+    )
+
+    for fiches, type_note in lots:
+        for fiche in fiches:
+            index.setdefault(
+                normalize(fiche.filename),
+                {
+                    "id": encode_id(fiche.path, VAULT_PATH),
+                    "type": type_note,
+                    "nom": fiche.filename,
+                },
+            )
+
+    return index
 
 
 # =====================================================
@@ -347,6 +432,14 @@ def get_project(note_id: str):
 
     donnees["collaborateurs"] = sorted(noms)
 
+    # Les notes du projet, à côté de ses tâches : ce sont les points
+    # qu'on ne veut pas perdre sans pour autant en faire un suivi.
+    donnees["notes"] = [
+        _note_avec_points(note, [projet])
+        for note in repository.get_notes_for_project(projet)
+        if not note.is_archived
+    ]
+
     return donnees
 
 
@@ -454,6 +547,217 @@ def get_collaborator(note_id: str):
 
 
 # =====================================================
+# Connaissances (§16)
+# =====================================================
+
+
+@app.get("/api/knowledge")
+def get_connaissances(
+    domaine: str | None = None,
+    sujet: str | None = None,
+    categorie: str | None = None,
+    maturite: str | None = None,
+    tag: str | None = None,
+):
+    """La base de connaissances, filtrable sur ses quatre axes.
+
+    Les compteurs qui accompagnent la liste — arborescence,
+    catégories, maturités, tags — portent sur la **base entière**,
+    jamais sur le résultat filtré. C'est délibéré : des compteurs
+    qui rétrécissent avec la sélection finissent par ne plus rien
+    proposer, et on ne peut plus changer de filtre sans tout
+    remettre à zéro.
+    """
+    toutes = repository.get_knowledge()
+
+    retenues = connaissances.filtrer(
+        toutes,
+        VAULT_PATH,
+        domaine=domaine,
+        sujet=sujet,
+        categorie=categorie,
+        maturite=maturite,
+        tag=tag,
+    )
+
+    return {
+        "total": len(retenues),
+        "total_base": len(toutes),
+        "items": [
+            knowledge_to_dict(note, VAULT_PATH)
+            for note in connaissances.trier(retenues, VAULT_PATH)
+        ],
+        "arborescence": [
+            {
+                "domaine": branche.domaine,
+                "total": branche.total,
+                "sujets": [
+                    {"sujet": rameau.sujet, "total": rameau.total}
+                    for rameau in branche.sujets
+                ],
+            }
+            for branche in connaissances.arborescence(
+                toutes,
+                VAULT_PATH,
+            )
+        ],
+        "categories": [
+            {"libelle": libelle, "valeur": valeur}
+            for libelle, valeur in connaissances.compter(
+                toutes,
+                connaissances.CATEGORIES,
+                "categorie",
+            )
+        ],
+        "maturites": [
+            {"libelle": libelle, "valeur": valeur}
+            for libelle, valeur in connaissances.compter(
+                toutes,
+                connaissances.MATURITES,
+                "maturite",
+            )
+        ],
+        "tags": [
+            {"libelle": libelle, "valeur": valeur}
+            for libelle, valeur in connaissances.compter_tags(toutes)
+        ],
+    }
+
+
+@app.get("/api/knowledge/{note_id}")
+def get_connaissance(note_id: str):
+    chemin = _ensure_exists(_note_path(note_id))
+
+    try:
+        note = vault.read_knowledge(chemin)
+    except ValueError as error:
+        raise HTTPException(404, str(error)) from error
+
+    corps = vault.read_body(chemin)
+
+    donnees = knowledge_to_dict(note, VAULT_PATH)
+    donnees["body"] = corps
+    donnees["version"] = version_de(chemin)
+
+    # Les `[[liens]]` sont la navigation propre à la base de
+    # connaissances : on les résout ici pour que l'écran puisse les
+    # rendre cliquables au lieu de les afficher en italique.
+    index = _index_des_notes(repository._collect_all())
+
+    donnees["liens"] = [
+        {"cible": cible, **index[normalize(cible)]}
+        for cible in lire_liens(corps)
+        if normalize(cible) in index
+    ]
+
+    donnees["liens_morts"] = [
+        cible
+        for cible in lire_liens(corps)
+        if normalize(cible) not in index
+    ]
+
+    return donnees
+
+
+# =====================================================
+# Notes de projet
+# =====================================================
+
+
+@app.get("/api/notes")
+def get_notes(project: str | None = None, archivees: bool = False):
+    """Les notes de `07-Notes/`, avec leurs points.
+
+    Les points voyagent avec la liste : une note tient en trois
+    cases, et obliger à ouvrir une fiche pour en cocher une
+    reviendrait à demander plus de gestes que le Vault lui-même.
+
+    Les notes rangées dans `Archives/` sont écartées par défaut,
+    comme le reste de ce qui est archivé dans l'application.
+    """
+    toutes = repository.get_notes()
+
+    retenues = [
+        note
+        for note in toutes
+        if archivees or not note.is_archived
+    ]
+
+    if project:
+        retenues = [
+            note
+            for note in retenues
+            if same_reference(note.project, project)
+        ]
+
+    retenues.sort(key=lambda note: note.name.casefold())
+
+    projets = repository.get_projects()
+
+    return {
+        "total": len(retenues),
+        "archivees": sum(1 for note in toutes if note.is_archived),
+        "items": [
+            _note_avec_points(note, projets) for note in retenues
+        ],
+    }
+
+
+@app.get("/api/notes/{note_id}")
+def get_note(note_id: str):
+    chemin = _ensure_exists(_note_path(note_id))
+
+    try:
+        note = vault.read_note(chemin)
+    except ValueError as error:
+        raise HTTPException(404, str(error)) from error
+
+    donnees = _note_avec_points(note)
+    donnees["body"] = vault.read_body(chemin)
+    donnees["version"] = version_de(chemin)
+
+    return donnees
+
+
+# =====================================================
+# Journal
+# =====================================================
+
+
+@app.get("/api/journal")
+def get_journal(limite: int = 60):
+    """Les journées du journal, de la plus récente à la plus ancienne.
+
+    Le fichier, lui, est chronologique : on y écrit à la fin, là où
+    `Ctrl + Fin` amène le curseur. C'est l'affichage qui inverse,
+    parce qu'un écran montre d'abord ce qui vient de se passer.
+    """
+    service = JournalService(repository)
+
+    try:
+        chemin = service.chemin()
+        jours = service.jours()
+    except JournalError as error:
+        raise HTTPException(404, str(error)) from error
+
+    return {
+        "note": chemin.stem,
+        "id": encode_id(chemin, VAULT_PATH),
+        "version": version_de(chemin),
+        "total_jours": len(jours),
+        "total_lignes": sum(len(jour.lignes) for jour in jours),
+        "jours": [
+            {
+                "titre": jour.titre,
+                "date": jour.date.isoformat() if jour.date else None,
+                "lignes": list(jour.lignes),
+            }
+            for jour in jours[: max(1, min(limite, 400))]
+        ],
+    }
+
+
+# =====================================================
 # Recherche
 # =====================================================
 
@@ -467,6 +771,8 @@ def search(q: str = Query("", min_length=0)):
             "projects": [],
             "tasks": [],
             "collaborators": [],
+            "knowledge": [],
+            "notes": [],
         }
 
     resultats = repository.search(q)
@@ -486,6 +792,17 @@ def search(q: str = Query("", min_length=0)):
             collaborator_to_dict(collaborateur, VAULT_PATH)
             for collaborateur in resultats.collaborators
         ],
+        "knowledge": [
+            knowledge_to_dict(note, VAULT_PATH)
+            for note in connaissances.trier(
+                resultats.knowledge,
+                VAULT_PATH,
+            )
+        ],
+        "notes": [
+            note_to_dict(note, VAULT_PATH)
+            for note in resultats.notes
+        ],
     }
 
 
@@ -503,7 +820,11 @@ def activite(
     dans Obsidian disparaît d'ici — c'est une vue, pas un journal
     parallèle.
     """
-    projets, taches, collaborateurs = repository._collect_all()
+    contenu = repository._collect_all()
+
+    projets = contenu.projects
+    taches = contenu.tasks
+    collaborateurs = contenu.collaborators
 
     lots = [
         (taches, "task"),
@@ -574,7 +895,10 @@ def activite(
 
 
 @app.get("/api/graph")
-def graphe(inclure_terminees: bool = False):
+def graphe(
+    inclure_terminees: bool = False,
+    inclure_connaissances: bool = True,
+):
     """Relations entre projets, tâches et collaborateurs (§22, §23).
 
     Deux sortes de liens, tous deux déduits de champs en texte libre :
@@ -593,12 +917,28 @@ def graphe(inclure_terminees: bool = False):
     abandonnées, et leurs liens ne décrivent plus rien. Les terminées
     sont écartées par défaut, mais peuvent être demandées — voir ce
     qu'un projet a produit est un usage légitime de cette vue.
+
+    S'y ajoutent deux types de notes et une troisième sorte de lien.
+
+    Les **notes de projet** se rattachent comme les tâches, par leur
+    champ `project` — c'est le seul contrôle simple contre la faute
+    de frappe qui détache silencieusement une note de son projet.
+
+    Les **connaissances** se relient par leurs `[[liens]]`, qui sont
+    leur navigation propre. Ces liens-là sont lus dans le corps des
+    notes, pas dans le frontmatter : c'est le seul endroit où ils
+    existent. Les fiches classiques ne sont pas dépouillées de la
+    sorte — leurs `[[Alice]]` de courtoisie doubleraient les
+    rattachements déjà déduits, sans rien apprendre.
     """
-    projets, taches, collaborateurs = repository._collect_all()
+    contenu = repository._collect_all()
+
+    projets = contenu.projects
+    collaborateurs = contenu.collaborators
 
     taches = [
         task
-        for task in taches
+        for task in contenu.tasks
         if (task.status or "").casefold() != "archived"
         and (inclure_terminees or task.is_open)
     ]
@@ -682,7 +1022,101 @@ def graphe(inclure_terminees: bool = False):
                     }
                 )
 
-    # Une tâche sans aucun lien reste dans le graphe : c'est
+    notes = [
+        note for note in contenu.notes if not note.is_archived
+    ]
+
+    for note in notes:
+        identifiant = encode_id(note.path, VAULT_PATH)
+
+        noeuds.append(
+            {
+                "id": identifiant,
+                "type": "note",
+                "nom": note.name,
+                "statut": None,
+                "priorite": None,
+                "poids": 1,
+            }
+        )
+
+        for projet in projets:
+            if belongs_to(note, projet):
+                liens.append(
+                    {
+                        "de": identifiant,
+                        "vers": encode_id(projet.path, VAULT_PATH),
+                        "genre": "projet",
+                    }
+                )
+
+    savoirs = contenu.knowledge if inclure_connaissances else []
+
+    for savoir in savoirs:
+        noeuds.append(
+            {
+                "id": encode_id(savoir.path, VAULT_PATH),
+                "type": "knowledge",
+                "nom": savoir.name,
+                "statut": savoir.maturite,
+                "priorite": None,
+                "poids": 1,
+            }
+        )
+
+    # Les `[[liens]]` vivent dans le corps des notes : il faut les y
+    # lire. Un seul passage, sur les seules notes concernées.
+    index = _index_des_notes(contenu)
+
+    for porteuse in [*savoirs, *notes]:
+        depart = encode_id(porteuse.path, VAULT_PATH)
+
+        try:
+            corps = vault.read_body(porteuse.path)
+        except (OSError, ValueError):
+            # Une note illisible ne doit pas vider tout le graphe.
+            continue
+
+        for cible in lire_liens(corps):
+            trouvee = index.get(normalize(cible))
+
+            if trouvee is None or trouvee["id"] == depart:
+                continue
+
+            liens.append(
+                {
+                    "de": depart,
+                    "vers": trouvee["id"],
+                    "genre": "lien",
+                }
+            )
+
+    # Un lien vers une note écartée de la vue — tâche terminée,
+    # connaissance masquée — ne mène nulle part : on le retire plutôt
+    # que de dessiner un trait vers le vide.
+    presents = {noeud["id"] for noeud in noeuds}
+
+    liens = [
+        lien
+        for lien in liens
+        if lien["de"] in presents and lien["vers"] in presents
+    ]
+
+    # Une connaissance pèse ce que pèsent ses liens : c'est ce qui
+    # fait ressortir les notes pivots d'un domaine. Une note isolée
+    # pèse donc zéro, et c'est exact — annoncer « 1 lien » sur un
+    # nœud dessiné en pointillés se contredirait à l'écran.
+    degres: dict[str, int] = {}
+
+    for lien in liens:
+        degres[lien["de"]] = degres.get(lien["de"], 0) + 1
+        degres[lien["vers"]] = degres.get(lien["vers"], 0) + 1
+
+    for noeud in noeuds:
+        if noeud["type"] in ("knowledge", "note"):
+            noeud["poids"] = degres.get(noeud["id"], 0)
+
+    # Une note sans aucun lien reste dans le graphe : c'est
     # précisément l'information que la vue doit rendre visible.
     relies = {lien["de"] for lien in liens} | {
         lien["vers"] for lien in liens

@@ -31,7 +31,7 @@ curl -s http://127.0.0.1:8765/api/health
 Réponse attendue — le chemin du Vault et le nombre de notes lues :
 
 ```json
-{"vault":"/home/maxime/Documents/document semaine camping/travail","existe":true,"notes":43}
+{"vault":"/home/maxime/Documents/document semaine camping/travail","existe":true,"notes":59}
 ```
 
 ## Si ça ne marche pas
@@ -98,6 +98,24 @@ calendrier.
   lu dans les notes elles-mêmes — rien n'est stocké à côté.
 - **Graph** : la carte des relations. Les notes en pointillés ne sont
   rattachées à rien — souvent une faute de frappe dans un champ.
+
+Et pour ce qu'on apprend plutôt que ce qu'on fait :
+
+- **Connaissances** : l'arborescence à gauche suit les dossiers de
+  `06-Connaissances`, les filtres portent sur la sorte de note et sa
+  maturité, et les tags traversent tout ça. Une note qui annonce un
+  domaine et vit dans un autre dossier se signale sur sa fiche.
+- **Notes** : les notes de `07-Notes`, groupées par projet. Les cases
+  se cochent directement dans la liste — elles sont écrites dans le
+  fichier, et rien d'autre n'y bouge. On les retrouve aussi dans le
+  dashboard de leur projet, à côté de ses tâches.
+- **Journal** : le champ en haut de la page ajoute une ligne à la
+  journée du jour. Le bouton `✎ Noter au journal` de la barre latérale
+  fait la même chose depuis n'importe quel écran.
+
+Les connaissances et les notes se **créent dans Obsidian**, avec leurs
+templates : ils rangent le fichier et posent le bon squelette. Ici,
+on les lit, on les filtre et on coche.
 
 ## En cas de doute
 

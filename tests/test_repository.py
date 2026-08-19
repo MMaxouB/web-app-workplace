@@ -193,3 +193,100 @@ def test_rattachement_des_taches_aux_projets(
                 f"{task.name} rattachée à {project.name} sans "
                 "champ project"
             )
+
+
+# =====================================================
+# Connaissances et notes
+# =====================================================
+
+
+def test_les_connaissances_vivent_dans_leur_base(
+    repository: ObsidianRepository,
+):
+    """Le dossier dit le sujet : encore faut-il qu'elles y soient."""
+    egarees = [
+        note.path.name
+        for note in repository.get_knowledge()
+        if "06-Connaissances" not in note.path.parts
+    ]
+
+    assert not egarees, f"connaissances hors de la base : {egarees}"
+
+
+def test_les_notes_de_projet_vivent_dans_07_notes(
+    repository: ObsidianRepository,
+):
+    egarees = [
+        note.path.name
+        for note in repository.get_notes()
+        if "07-Notes" not in note.path.parts
+    ]
+
+    assert not egarees, f"notes hors de 07-Notes : {egarees}"
+
+
+def test_les_maturites_sont_valides(repository: ObsidianRepository):
+    """Trois niveaux, pas plus : une échelle floue ne sert à rien."""
+    from core.services.connaissances import MATURITES
+
+    fautives = [
+        f"{note.path.name} : maturite={note.maturite!r}"
+        for note in repository.get_knowledge()
+        if (note.maturite or "").casefold() not in MATURITES
+    ]
+
+    assert not fautives, fautives
+
+
+def test_les_categories_sont_valides(repository: ObsidianRepository):
+    """C'est la catégorie qui décide du squelette proposé à la création."""
+    from core.services.connaissances import CATEGORIES
+
+    fautives = [
+        f"{note.path.name} : categorie={note.categorie!r}"
+        for note in repository.get_knowledge()
+        if (note.categorie or "").casefold() not in CATEGORIES
+    ]
+
+    assert not fautives, fautives
+
+
+def test_les_connaissances_sont_rangees_selon_leur_domaine(
+    repository: ObsidianRepository,
+):
+    """Le contrôle Dataview des conventions, exécuté à chaque test.
+
+    Une note dont le `domaine:` ne se retrouve pas dans son chemin
+    n'est pas cassée — elle est introuvable là où on la cherchera.
+    """
+    from core.services.connaissances import dossier_coherent
+
+    mal_rangees = [
+        f"{note.path.name} : domaine={note.domaine!r} "
+        f"dossier={note.path.parent.name!r}"
+        for note in repository.get_knowledge()
+        if note.domaine and not dossier_coherent(note, VAULT_PATH)
+    ]
+
+    assert not mal_rangees, mal_rangees
+
+
+def test_une_note_de_projet_n_a_pas_de_criticite(
+    repository: ObsidianRepository,
+):
+    """Ni priorité, ni statut, ni échéance : c'est la convention."""
+    vault = ObsidianVault(VAULT_PATH)
+
+    interdits = ("status", "priority", "due", "deadline")
+
+    fautives = []
+
+    for note in repository.get_notes():
+        donnees = vault.safe_read_frontmatter(note.path) or {}
+
+        presents = [champ for champ in interdits if donnees.get(champ)]
+
+        if presents:
+            fautives.append(f"{note.path.name} : {presents}")
+
+    assert not fautives, fautives

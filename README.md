@@ -31,10 +31,14 @@ des données personnelles et l'API n'a aucune authentification.
 .venv/bin/python -m pytest
 ```
 
-397 tests : 276 hérités du cœur métier du bot Discord (writer,
-vault, repository, services, analytics), 41 pour l'API de lecture,
-29 pour les écritures, 20 pour la surveillance du Vault et
-31 pour le fil d'activité.
+546 tests. Le socle vient du cœur métier du bot Discord — writer,
+vault, repository, services, analytics — auquel s'ajoutent 76 tests
+d'API, 29 d'écriture, 20 pour la surveillance du Vault et 31 pour le
+fil d'activité.
+
+Le branchement des connaissances en a apporté 149, dont 28 pour la
+navigation dans la base, 25 pour le journal, 20 pour les notes de
+projet et 14 pour la lecture des cases et des liens.
 
 Aucun test n'écrit dans le vrai Vault. Ceux qui écrivent construisent
 un Vault temporaire ; deux fichiers (`test_vault.py`,
@@ -48,7 +52,10 @@ vault_web/
 │   ├── config.py         chemin du Vault, port, étiquette de source
 │   ├── obsidian/         vault, repository, writer, models
 │   ├── services/         tasks, projects, collaborators, notes,
+│   │                     connaissances, notes_projet, journal,
 │   │                     analytics, historique
+│   ├── utils/            text (comparaison tolérante), markdown
+│   │                     (cases à cocher, liens [[...]])
 │   └── surveillance.py   file watcher du Vault (§28)
 ├── api/
 │   ├── app.py            routes de lecture, montage du frontend
@@ -90,10 +97,17 @@ GET /api/projects/{id}              fiche + tâches rattachées + note
 GET /api/projects/{id}/stats        répartitions par statut et priorité
 GET /api/collaborators              ?status=
 GET /api/collaborators/{id}         fiche + tâches
-GET /api/search?q=                  projets, tâches, collaborateurs
+GET /api/knowledge                  ?domaine= &sujet= &categorie=
+                                    &maturite= &tag=
+GET /api/knowledge/{id}             fiche + Markdown + liens résolus
+GET /api/notes                      ?project= &archivees=  (points inclus)
+GET /api/notes/{id}                 fiche + Markdown + points
+GET /api/journal                    journées, de la plus récente
+GET /api/search?q=                  les cinq types de notes
 GET /api/activity                   fil des changements ?limite= &type=
                                     &genre= &changements=
 GET /api/graph                      relations ?inclure_terminees=
+                                    &inclure_connaissances=
 GET /api/meta                       valeurs acceptées par les formulaires
 GET /api/health                     état du Vault
 ```
@@ -118,6 +132,9 @@ PATCH  /api/collaborators/{id}      status (3 valeurs), role, company,
                                     discord, email, github, website, timezone
 
 POST   /api/{genre}/{id}/notes      ajouter un texte sous « ## Notes »
+
+POST   /api/journal                 une ligne dans la journée en cours
+PATCH  /api/notes/{id}/points/{n}   cocher / décocher un point
 ```
 
 ### Deux règles d'écriture
@@ -158,6 +175,10 @@ Markdown. Trois tests couvrent ce point.
 - **Collaborateurs** — liste et profils
 - **Activité** — fil des changements, groupé par jour, filtrable par genre
 - **Graph** — relations projets ↔ tâches ↔ collaborateurs, zoomable
+- **Connaissances** — arborescence domaine → sujet, filtres par sorte
+  et par maturité, nuage de tags, fiche avec liens résolus
+- **Notes** — notes de projet groupées par projet, points cochables
+- **Journal** — capture en haut de page, journées de la plus récente
 - **Recherche** — globale, et palette `Ctrl+K`
 - Thème sombre par défaut, thème clair disponible
 
@@ -174,6 +195,9 @@ Markdown. Trois tests couvrent ce point.
 | `Marquer terminée` | change le statut **et** déplace le fichier |
 | `Ajouter une note` | écrit sous `## Notes`, sans toucher à l'historique |
 | `Archiver` | passe en `archived`, après confirmation |
+| `✎ Noter au journal` | une ligne dans la journée du jour, sans quitter la page |
+| Clic sur un point de note | coche la case dans le fichier, met `mis_a_jour` à jour |
+| Clic sur un tag | filtre la base de connaissances sur ce tag |
 
 Chaque écriture répercute trois choses, comme le faisait le bot : le
 frontmatter (qui fait foi), la ligne correspondante du tableau dans le
@@ -361,21 +385,162 @@ produit est un usage légitime.
 Survoler un nœud estompe tout sauf son voisinage, cliquer ouvre la
 fiche, la molette zoome et le glisser déplace.
 
+## Connaissances, notes et journal (§16)
+
+Trois types de notes se sont ajoutés au Vault avec leurs conventions
+(`03-Documentation/Base de connaissances.md` et `Notes et journal.md`).
+L'application les lit désormais tous les trois.
+
+```text
+06-Connaissances/    type: knowledge   navigation domaine → sujet
+07-Notes/            type: note        points cochables
+07-Notes/Journal.md  type: journal     capture rapide
+```
+
+### Ici, le dossier ne suit pas le statut
+
+C'est la seule différence qui compte, et toute l'organisation en
+découle. Pour une tâche, changer `status:` **oblige** à déplacer le
+fichier. Pour une connaissance, le dossier dit le **sujet**, jamais
+l'avancement : elle ne déménage jamais — sinon les liens `[[...]]`
+casseraient — et ce qui évolue, c'est son champ `maturite`.
+
+Conséquence directe : il n'y a ni bouton « Archiver » ni changement de
+statut sur ces écrans. La navigation descend `domaine → sujet`, les
+filtres portent sur `categorie` et `maturite`, et les tags traversent
+l'arborescence.
+
+### Le frontmatter fait foi, le dossier dépanne
+
+`domaine` et `sujet` sont lus dans le frontmatter — c'est lui que
+lisent les requêtes Dataview. Quand le champ manque, le dossier prend
+le relais : une note incomplète reste rangée quelque part plutôt que
+de tomber dans un fourre-tout.
+
+Quand les deux se contredisent, la fiche le dit. Ce n'est pas une
+erreur — la note reste parfaitement lisible — mais elle sera
+introuvable là où on la cherchera. C'est le contrôle Dataview des
+conventions, ramené à l'écran, et un test le rejoue sur le vrai Vault
+à chaque exécution de la suite.
+
+### Les compteurs ne suivent pas les filtres
+
+L'arborescence, les catégories, les maturités et les tags comptent
+toujours sur la **base entière**. Des compteurs qui rétrécissent avec
+la sélection finissent par ne plus rien proposer, et on ne peut plus
+changer de filtre sans tout remettre à zéro.
+
+### Une note de projet n'a aucune criticité
+
+Ni priorité, ni statut, ni échéance : rien à décider en l'écrivant,
+rien à tenir à jour ensuite. Son avancement se lit dans ses cases
+cochées, et nulle part ailleurs.
+
+Les points sont donc **cochables là où on les lit** — dans la liste,
+dans la fiche, et dans le dashboard du projet — et seule la carte
+concernée se redessine. Un rendu complet de la page ferait sauter
+l'écran à chaque clic.
+
+Une case cochée met `mis_a_jour` au jour même, une seule fois par
+jour : les conventions présentent ce champ comme la date de dernière
+modification, et une requête Dataview trie dessus. Recocher une case
+déjà cochée n'écrit rien du tout.
+
+**Le libellé du point voyage avec le clic.** L'interface renvoie le
+texte qu'elle affichait ; s'il ne correspond plus, le serveur répond
+409 au lieu de cocher la mauvaise ligne. Une note réorganisée dans
+Obsidian décale ses points, et rien ne le signalerait autrement.
+
+### Le nom de projet qui n'existe pas
+
+Les notes sont groupées par le champ `project` **tel qu'il est
+écrit** — c'est ce qui fait apparaître « Refonte espace de tr**v**ail »
+juste à côté de « Refonte espace de travail ». Le serveur, lui, dit si
+ce nom retombe sur un vrai projet, et le groupe se signale sinon.
+
+Les conventions confient explicitement ce contrôle à l'application :
+Dataview ne sait pas confronter deux ensembles de notes dans une même
+requête, « la comparaison tolérante, sans accents ni casse, reste le
+travail de la web app ».
+
+### Le journal s'écrit à la fin
+
+C'est l'inverse des historiques de fiches, rangés du plus récent au
+plus ancien. Ici l'ordre du fichier est chronologique, parce que le
+geste décrit par les conventions est « `Ctrl + Fin`, écrire une ligne,
+fermer ». L'écran, lui, montre d'abord la journée du jour.
+
+La puce vide que le gabarit dépose sous chaque nouvelle date est
+**remplacée**, pas doublée : ce n'est pas une ligne du journal, c'est
+un endroit où écrire.
+
+Le fichier est trouvé par son `type: journal`, jamais par son nom. Les
+conventions prévoient qu'il devienne `Journal 2026.md` le jour où il
+sera trop gros, en précisant que rien ne dépend de son nom — coder le
+chemin en dur aurait démenti cette phrase à la première archive. Et
+aucun fichier n'est créé : sans note `type: journal`, l'écran le dit
+et renvoie au gabarit d'Obsidian.
+
+### Ce qui reste dans Obsidian
+
+Les connaissances et les notes se **créent** dans Obsidian, par leurs
+templates Templater. Ils posent le frontmatter, rangent le fichier
+selon le domaine et proposent le squelette de la catégorie choisie ;
+le menu des projets d'une note est lu dans le Vault, ce qui évite la
+faute de frappe qui la détacherait de son projet. Deux chemins de
+création finiraient par diverger — l'application se contente donc de
+lire, de filtrer et de cocher.
+
+### Dans la vue graph
+
+Deux types de nœuds et une troisième sorte de lien s'ajoutent.
+
+Les **notes de projet** se rattachent comme les tâches, par leur champ
+`project` et la même comparaison tolérante. C'est le seul contrôle
+simple contre la faute de frappe qui détache silencieusement une note
+de son projet — celle-là même que la vue avait déjà révélée sur une
+tâche.
+
+Les **connaissances** se relient par leurs `[[liens]]`, lus dans le
+corps des notes puisque c'est le seul endroit où ils existent. Une
+connaissance pèse ce que pèsent ses liens, ce qui fait ressortir les
+notes pivots d'un domaine ; une note sans lien pèse zéro et se dessine
+en pointillés, comme le reste des isolés.
+
+Les fiches classiques ne sont pas dépouillées de la sorte : leurs
+`[[Alice]]` de courtoisie doubleraient des rattachements déjà déduits
+des champs, sans rien apprendre. Un bouton écarte les connaissances du
+dessin le jour où la base sera trop fournie pour rester lisible.
+
 ## Ce qui reste à faire
 
 Cette version couvre les **phases 1 à 5** du cahier des charges
 (`03-Documentation/architecture_obsidian_web_app.md`).
 
+Le **§16** s'y ajoute : la base de connaissances, les notes de projet
+et le journal sont branchés.
+
 ### Ensuite
 
-- **§16** — knowledge base. Reportée d'un commun accord : ses types
-  (`knowledge`, `resource`) n'existent pas encore dans le Vault, il
-  faudrait d'abord décider de l'arborescence.
-- **§27** — index mémoire. À 43 notes, un parcours complet coûte 18 ms.
-  Inutile aujourd'hui, à reprendre vers 400 notes. Le surveillant est
-  l'endroit où le brancher : il sait déjà quelles notes ont changé.
 - **§7** — classification automatique, recherche sémantique. Après
   stabilisation, comme prévu.
+- **Créer une connaissance ou une note depuis l'application.** Écarté
+  pour l'instant : les templates Templater font mieux, et deux chemins
+  de création finiraient par diverger. À rouvrir si le besoin se fait
+  sentir hors d'Obsidian.
+- **Modifier `maturite` depuis la fiche.** L'écriture existe déjà
+  (`set_frontmatter_field`) ; ce qui manque, c'est de décider si une
+  maturité se change d'un clic ou après relecture — le champ est un
+  engagement, pas un statut.
+- **Promouvoir une ligne du journal en tâche ou en note.** Prévu par
+  les conventions, pas encore fait.
+- **Backlinks sur une fiche de connaissance.** Les liens sortants sont
+  résolus ; les entrants demandent un parcours de tous les corps, donc
+  l'index mémoire ci-dessous.
+- **§27** — index mémoire. À 58 notes, un tableau de bord complet coûte
+  31 ms. Inutile aujourd'hui, à reprendre vers 400 notes. Le
+  surveillant est l'endroit où le brancher : il sait déjà quelles notes
+  ont changé.
 
 ## Origine du code
 

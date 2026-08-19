@@ -15,8 +15,15 @@ reste le garde-fou en cas d'identifiant forgé.
 import base64
 from pathlib import Path
 
-from core.obsidian.models import Collaborator, Project, Task
-from core.services import analytics
+from core.obsidian.models import (
+    Collaborator,
+    Knowledge,
+    Note,
+    Project,
+    Task,
+)
+from core.services import analytics, connaissances
+from core.utils.markdown import Case
 
 
 def encode_id(path: Path, vault_path: Path) -> str:
@@ -122,6 +129,74 @@ def collaborator_to_dict(
         "website": collaborator.website,
         "timezone": collaborator.timezone,
         "joined": collaborator.joined,
+    }
+
+
+def knowledge_to_dict(
+    knowledge: Knowledge,
+    vault_path: Path,
+) -> dict:
+    """Une connaissance, prête pour l'écran.
+
+    `domaine` et `sujet` sont les valeurs **effectives** : celles que
+    la note déclare, ou à défaut celles que son dossier indique. La
+    navigation s'appuie dessus, et une note au frontmatter incomplet
+    doit rester rangée quelque part plutôt que de disparaître.
+
+    `range_correctement` dit si les deux coïncident. C'est le
+    contrôle de cohérence des conventions, ramené à l'écran : une
+    note qui annonce un domaine et vit dans un autre dossier n'est
+    pas cassée, elle est simplement introuvable là où on la
+    cherchera.
+    """
+    return {
+        "id": encode_id(knowledge.path, vault_path),
+        "version": _version(knowledge.path),
+        "name": knowledge.name,
+        "categorie": knowledge.categorie,
+        "domaine": connaissances.domaine_de(knowledge, vault_path),
+        "sujet": connaissances.sujet_de(knowledge, vault_path),
+        "domaine_declare": knowledge.domaine,
+        "maturite": knowledge.maturite,
+        "tags": list(knowledge.tags),
+        "source": knowledge.source,
+        "created": knowledge.created,
+        "mis_a_jour": knowledge.mis_a_jour,
+        "dossier": str(knowledge.path.parent.relative_to(vault_path)),
+        "range_correctement": connaissances.dossier_coherent(
+            knowledge,
+            vault_path,
+        ),
+    }
+
+
+def note_to_dict(note: Note, vault_path: Path) -> dict:
+    return {
+        "id": encode_id(note.path, vault_path),
+        "version": _version(note.path),
+        "name": note.name,
+        "project": note.project,
+        "sujet": note.sujet,
+        "created": note.created,
+        "mis_a_jour": note.mis_a_jour,
+        "is_archived": note.is_archived,
+        "folder": note.path.parent.name,
+    }
+
+
+def case_to_dict(case: Case) -> dict:
+    """Un point à cocher.
+
+    `index` est le rang de la case dans la note, et `texte` le
+    libellé affiché. Les deux repartent ensemble au serveur quand on
+    coche : le rang désigne la ligne, le libellé vérifie qu'elle dit
+    toujours la même chose.
+    """
+    return {
+        "index": case.index,
+        "texte": case.texte,
+        "cochee": case.cochee,
+        "niveau": case.niveau,
     }
 
 

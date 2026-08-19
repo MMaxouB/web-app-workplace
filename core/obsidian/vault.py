@@ -4,7 +4,13 @@ from pathlib import Path
 
 import yaml
 
-from core.obsidian.models import Collaborator, Project, Task
+from core.obsidian.models import (
+    Collaborator,
+    Knowledge,
+    Note,
+    Project,
+    Task,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +36,39 @@ def _as_optional_str(value) -> str | None:
         return value.isoformat()
 
     return str(value)
+
+
+def _as_tags(value) -> tuple[str, ...]:
+    """Normalise le champ `tags` d'une connaissance.
+
+    Le Vault l'écrit en liste (`tags: [xss, dom]`), mais Obsidian
+    accepte aussi une chaîne unique et un bloc de puces. Les trois
+    formes arrivent donc ici, et aucune ne doit lever.
+
+    Les valeurs sont rendues **telles qu'elles sont écrites** : le
+    Vault est la source de vérité, et un tag mal orthographié se
+    corrige dans la note, pas à l'affichage. C'est la comparaison
+    qui est tolérante, comme pour le champ `project` des tâches.
+    """
+    if value is None:
+        return ()
+
+    if isinstance(value, str):
+        brut = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        brut = list(value)
+    else:
+        brut = [value]
+
+    tags = []
+
+    for element in brut:
+        tag = (_as_optional_str(element) or "").strip().lstrip("#")
+
+        if tag and tag not in tags:
+            tags.append(tag)
+
+    return tuple(tags)
 
 
 class ObsidianVault:
@@ -231,6 +270,43 @@ class ObsidianVault:
             completed=_as_optional_str(data.get("completed")),
         )
 
+    def build_knowledge(
+        self,
+        data: dict,
+        file_path: Path,
+    ) -> Knowledge:
+        """Construit une Knowledge à partir d'un frontmatter déjà lu.
+
+        Les champs sont ceux du Vault, en français : ils reprennent
+        les noms écrits dans les notes, pour qu'un aller-retour
+        entre le frontmatter et l'écran ne demande aucune traduction.
+        """
+        return Knowledge(
+            path=file_path.resolve(),
+            type=data["type"],
+            name=file_path.stem,
+            categorie=_as_optional_str(data.get("categorie")),
+            domaine=_as_optional_str(data.get("domaine")),
+            sujet=_as_optional_str(data.get("sujet")),
+            maturite=_as_optional_str(data.get("maturite")),
+            tags=_as_tags(data.get("tags")),
+            source=_as_optional_str(data.get("source")),
+            created=_as_optional_str(data.get("created")),
+            mis_a_jour=_as_optional_str(data.get("mis_a_jour")),
+        )
+
+    def build_note(self, data: dict, file_path: Path) -> Note:
+        """Construit une Note à partir d'un frontmatter déjà lu."""
+        return Note(
+            path=file_path.resolve(),
+            type=data["type"],
+            name=file_path.stem,
+            project=_as_optional_str(data.get("project")),
+            sujet=_as_optional_str(data.get("sujet")),
+            created=_as_optional_str(data.get("created")),
+            mis_a_jour=_as_optional_str(data.get("mis_a_jour")),
+        )
+
     def read_project(self, file_path: Path) -> Project:
         data = self.read_frontmatter(file_path)
 
@@ -263,3 +339,23 @@ class ObsidianVault:
             )
 
         return self.build_task(data, file_path)
+
+    def read_knowledge(self, file_path: Path) -> Knowledge:
+        data = self.read_frontmatter(file_path)
+
+        if data.get("type") != "knowledge":
+            raise ValueError(
+                f"Le fichier n'est pas une connaissance : {file_path}"
+            )
+
+        return self.build_knowledge(data, file_path)
+
+    def read_note(self, file_path: Path) -> Note:
+        data = self.read_frontmatter(file_path)
+
+        if data.get("type") != "note":
+            raise ValueError(
+                f"Le fichier n'est pas une note : {file_path}"
+            )
+
+        return self.build_note(data, file_path)

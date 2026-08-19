@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from core.obsidian.models import Collaborator, Project, Task
+from core.obsidian.models import (
+    Collaborator,
+    Knowledge,
+    Note,
+    Project,
+    Task,
+)
 
 
 def test_project_model():
@@ -92,3 +98,76 @@ def test_task_is_open():
     assert build_task(status="waiting").is_open
     assert not build_task(status="completed").is_open
     assert not build_task(status="archived").is_open
+
+
+def build_knowledge(**overrides) -> Knowledge:
+    fields = {
+        "path": Path("06-Connaissances/Cybersecurity/Web/XSS stockee.md"),
+        "type": "knowledge",
+        "name": "XSS stockee",
+        "categorie": "technique",
+        "domaine": "Cybersecurity",
+        "sujet": "Web",
+        "maturite": "stable",
+        "tags": ("xss", "dom"),
+        "source": "https://example.invalid/xss",
+        "created": "2026-08-18",
+        "mis_a_jour": "2026-08-18",
+    }
+
+    fields.update(overrides)
+
+    return Knowledge(**fields)
+
+
+def test_knowledge_model():
+    note = build_knowledge()
+
+    assert note.categorie == "technique"
+    assert note.maturite == "stable"
+    assert note.tags == ("xss", "dom")
+
+
+def test_le_nom_d_une_connaissance_est_son_fichier():
+    """La convention interdit un champ `name:` : le titre est le nom."""
+    note = build_knowledge()
+
+    assert note.name == note.filename == "XSS stockee"
+
+
+def build_note(**overrides) -> Note:
+    fields = {
+        "path": Path("07-Notes/Points Alpha.md"),
+        "type": "note",
+        "name": "Points Alpha",
+        "project": "Projet Alpha",
+        "sujet": "points a verifier",
+        "created": "2026-08-18",
+        "mis_a_jour": "2026-08-18",
+    }
+
+    fields.update(overrides)
+
+    return Note(**fields)
+
+
+def test_note_model():
+    note = build_note()
+
+    assert note.project == "Projet Alpha"
+    assert note.filename == "Points Alpha"
+
+
+def test_une_note_n_a_ni_statut_ni_priorite():
+    """La convention est explicite : aucune criticité sur une note."""
+    champs = {champ.name for champ in Note.__dataclass_fields__.values()}
+
+    assert not champs & {"status", "priority", "due", "deadline"}
+
+
+def test_note_is_archived_depend_du_dossier():
+    assert build_note(
+        path=Path("07-Notes/Archives/Ancienne.md")
+    ).is_archived
+
+    assert not build_note(path=Path("07-Notes/Vivante.md")).is_archived

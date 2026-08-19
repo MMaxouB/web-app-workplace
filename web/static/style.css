@@ -546,6 +546,11 @@ input, select, textarea {
 
 .tache-meta .sep { opacity: .45; }
 
+/* Le séparateur tient son espacement du `gap` de son conteneur quand
+   celui-ci est en flex ; dans un paragraphe ordinaire, il faut le lui
+   donner, sinon il se colle au mot suivant. */
+p .sep { margin: 0 6px; opacity: .45; }
+
 .tache-fin {
   display: flex;
   align-items: center;
@@ -1757,4 +1762,342 @@ input, select, textarea {
   font-size: 11.5px;
   color: var(--texte-faible);
   text-align: center;
+}
+
+/* =====================================================
+   Connaissances (§16)
+   =====================================================
+   Deux colonnes : l'arborescence à gauche, qui suit les dossiers,
+   et la liste à droite, que les filtres et les tags traversent.
+   ===================================================== */
+
+.grille-savoirs {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .grille-savoirs { grid-template-columns: 1fr; }
+}
+
+.arbre-savoirs {
+  position: sticky;
+  top: 0;
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+}
+
+.branche { margin-bottom: 6px; }
+
+.branche-titre,
+.rameau {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: var(--texte-doux);
+  text-align: left;
+  padding: 5px 8px;
+  font-size: 12.5px;
+  transition: background .12s, color .12s;
+}
+
+.branche-titre {
+  color: var(--texte);
+  font-weight: 560;
+}
+
+.rameau {
+  padding-left: 20px;
+  font-size: 12px;
+}
+
+.rameau.tout {
+  padding-left: 8px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--bordure);
+  border-radius: 5px 5px 0 0;
+  padding-bottom: 8px;
+}
+
+.branche-titre:hover,
+.rameau:hover { background: var(--carte-haut); color: var(--texte); }
+
+.branche-titre.actif,
+.rameau.actif {
+  background: var(--accent-doux);
+  color: var(--accent);
+}
+
+.branche-compte {
+  color: var(--texte-faible);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.branche-titre.actif .branche-compte,
+.rameau.actif .branche-compte { color: inherit; }
+
+/* Nuage de tags : la navigation qui traverse les dossiers. */
+
+.nuage-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.puce-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--carte);
+  border: 1px solid var(--bordure);
+  border-radius: 999px;
+  color: var(--texte-doux);
+  padding: 3px 10px;
+  font-size: 11.5px;
+  transition: border-color .12s, color .12s, background .12s;
+}
+
+.puce-tag:hover { border-color: var(--bordure-vive); color: var(--texte); }
+
+.puce-tag.actif {
+  background: var(--accent-doux);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
+}
+
+.puce-compte { color: var(--texte-faible); font-size: 10.5px; }
+.puce-tag.actif .puce-compte { color: inherit; }
+
+.liste-savoirs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.savoir {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--carte);
+  border: 1px solid var(--bordure);
+  border-radius: var(--rayon-fin);
+  padding: 11px 14px;
+  transition: border-color .12s, transform .12s;
+}
+
+.savoir:hover {
+  border-color: var(--bordure-vive);
+  transform: translateX(2px);
+}
+
+.savoir-corps { flex: 1; min-width: 0; }
+
+.savoir-nom { font-weight: 540; margin-bottom: 3px; }
+
+.savoir-meta {
+  font-size: 11.5px;
+  color: var(--texte-faible);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.savoir-fin { flex-shrink: 0; }
+
+.etiquettes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.pile {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.carte-aparte {
+  margin: 12px 0 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--texte-faible);
+}
+
+/* Un signalement, pas une erreur : la note reste parfaitement
+   lisible, elle est simplement rangée ailleurs qu'annoncé. */
+.avertissement {
+  background: color-mix(in srgb, var(--high) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--high) 30%, transparent);
+  border-radius: var(--rayon-fin);
+  color: var(--high);
+  padding: 11px 16px;
+  font-size: 12.5px;
+  margin-bottom: 16px;
+}
+
+/* =====================================================
+   Notes de projet et journal
+   ===================================================== */
+
+.grille-notes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.note-carte { transition: opacity .12s; }
+.note-carte.enregistrement { opacity: .55; }
+
+.note-tete {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.note-nom { font-weight: 580; font-size: 14px; }
+.note-nom:hover { color: var(--accent); }
+
+.note-sujet { font-size: 11.5px; color: var(--texte-faible); }
+
+.note-compte {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--texte-faible);
+  font-variant-numeric: tabular-nums;
+}
+
+.points {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.point {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 3px 4px;
+  border-radius: 5px;
+  font-size: 13px;
+  /* Une sous-case reste rattachée à celle qui la précède. */
+  margin-left: calc(var(--niveau, 0) * 7px);
+  transition: background .12s;
+}
+
+.point:hover { background: var(--carte-haut); }
+
+.point.cochee .point-texte {
+  color: var(--texte-faible);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.case {
+  background: none;
+  border: none;
+  padding: 0;
+  line-height: 1.4;
+  font-size: 15px;
+  color: var(--texte-faible);
+  transition: color .12s, transform .1s;
+}
+
+.case:hover { color: var(--accent); transform: scale(1.15); }
+.case:disabled { cursor: progress; }
+.point.cochee .case { color: var(--low); }
+
+.point-texte { flex: 1; min-width: 0; }
+
+/* Capture du journal : le geste doit tenir en trois secondes, donc
+   le champ est là, en haut, sans rien à ouvrir. */
+
+.capture-journal { margin-bottom: 16px; }
+
+.capture-journal form {
+  display: flex;
+  gap: 10px;
+}
+
+.capture-journal input {
+  flex: 1;
+  background: var(--fond);
+  border: 1px solid var(--bordure);
+  border-radius: var(--rayon-fin);
+  padding: 9px 13px;
+  outline: none;
+  transition: border-color .12s;
+}
+
+.capture-journal input:focus { border-color: var(--accent); }
+
+.jour-journal { margin-bottom: 12px; }
+
+.lignes-journal {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.lignes-journal li {
+  position: relative;
+  padding-left: 16px;
+  font-size: 13px;
+  white-space: pre-line;
+}
+
+.lignes-journal li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 8px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--bordure-vive);
+}
+
+/* =====================================================
+   Graph : les deux nouveaux types
+   ===================================================== */
+
+/* Un `[[lien]]` n'est pas un rattachement déduit d'un champ : il a
+   été écrit à la main, dans le corps de la note. Le trait le dit. */
+.arete-lien { stroke-dasharray: 1.5 3; opacity: .8; }
+
+.noeud-knowledge .etiquette { font-size: 11px; }
+
+/* Un nom de projet qui ne retombe sur aucun projet du Vault. Ce
+   n'est pas forcément une erreur — mais c'est presque toujours une
+   faute de frappe, et rien d'autre ne la signale. */
+.alerte-groupe {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: none;
+  color: var(--high);
+  background: color-mix(in srgb, var(--high) 12%, transparent);
+  border-radius: 5px;
+  padding: 1.5px 7px;
+  vertical-align: middle;
 }

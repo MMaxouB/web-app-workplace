@@ -684,3 +684,168 @@ def test_ecriture_produit_un_evenement_sur_la_note(
 
     assert relu["platform"] == "Discord"
     assert relu["type"] == "task"
+
+
+# =====================================================
+# Écriture en fin de section (journal)
+# =====================================================
+
+
+@pytest.fixture
+def journal(temp_vault: ObsidianVault) -> Path:
+    return temp_vault.path / "07-Notes" / "Journal.md"
+
+
+def test_append_bullet_ajoute_a_la_fin_de_la_section(writer, journal):
+    writer.append_bullet_to_section(journal, "## 2026-08-18", "- ajoutee")
+
+    lignes = journal.read_text(encoding="utf-8").splitlines()
+
+    debut = lignes.index("## 2026-08-18")
+    fin = lignes.index("## 2026-08-19")
+
+    assert lignes[debut:fin] == [
+        "## 2026-08-18",
+        "",
+        "- rappeler le client",
+        "- verifier postgres",
+        "- ajoutee",
+        "",
+    ]
+
+
+def test_append_bullet_remplace_la_puce_vide_du_gabarit(writer, journal):
+    writer.append_bullet_to_section(journal, "## 2026-08-19", "- ajoutee")
+
+    contenu = journal.read_text(encoding="utf-8")
+
+    assert contenu.endswith("## 2026-08-19\n\n- ajoutee\n")
+
+
+def test_append_bullet_pose_la_ligne_vide_sous_le_titre(
+    writer,
+    temp_vault_path,
+):
+    chemin = temp_vault_path / "07-Notes" / "Serree.md"
+
+    chemin.write_text(
+        "---\ntype: journal\n---\n\n## 2026-08-20\n",
+        encoding="utf-8",
+    )
+
+    writer.append_bullet_to_section(chemin, "## 2026-08-20", "- premiere")
+
+    assert chemin.read_text(encoding="utf-8").endswith(
+        "## 2026-08-20\n\n- premiere\n"
+    )
+
+
+def test_append_bullet_refuse_une_section_absente(writer, journal):
+    with pytest.raises(VaultWriteError):
+        writer.append_bullet_to_section(journal, "## 2030-01-01", "- x")
+
+
+def test_append_bullet_ne_touche_pas_au_preambule(writer, journal):
+    avant = journal.read_text(encoding="utf-8")
+
+    writer.append_bullet_to_section(journal, "## 2026-08-18", "- ajoutee")
+
+    apres = journal.read_text(encoding="utf-8")
+
+    entete = avant.split("## 2026-08-18")[0]
+
+    assert apres.startswith(entete)
+
+
+def test_append_block_ajoute_a_la_fin_du_fichier(writer, journal):
+    writer.append_block(journal, "## 2026-08-20\n\n- premiere")
+
+    contenu = journal.read_text(encoding="utf-8")
+
+    assert contenu.endswith("## 2026-08-20\n\n- premiere\n")
+    assert contenu.index("## 2026-08-20") > contenu.index("## 2026-08-19")
+
+
+def test_append_block_conserve_le_frontmatter(writer, journal, temp_vault):
+    writer.append_block(journal, "## 2026-08-20\n\n- premiere")
+
+    assert temp_vault.read_frontmatter(journal)["type"] == "journal"
+
+
+# =====================================================
+# Cases à cocher
+# =====================================================
+
+
+@pytest.fixture
+def note(temp_vault: ObsidianVault) -> Path:
+    return temp_vault.path / "07-Notes" / "Points Alpha.md"
+
+
+def test_set_checkbox_coche_la_bonne_case(writer, note):
+    from core.utils.markdown import lire_cases
+
+    texte, modifiee = writer.set_checkbox(note, 2, True)
+
+    assert texte == "sous-point indente"
+    assert modifiee
+
+    cases = lire_cases(note.read_text(encoding="utf-8"))
+
+    assert [case.cochee for case in cases] == [False, True, True]
+
+
+def test_set_checkbox_conserve_l_indentation(writer, note):
+    writer.set_checkbox(note, 2, True)
+
+    assert "  - [x] sous-point indente" in note.read_text(encoding="utf-8")
+
+
+def test_set_checkbox_ne_change_qu_une_ligne(writer, note):
+    avant = note.read_text(encoding="utf-8").splitlines()
+
+    writer.set_checkbox(note, 0, True)
+
+    apres = note.read_text(encoding="utf-8").splitlines()
+
+    assert len(avant) == len(apres)
+    assert sum(1 for a, b in zip(avant, apres) if a != b) == 1
+
+
+def test_set_checkbox_est_idempotent(writer, note):
+    contenu = note.read_text(encoding="utf-8")
+
+    texte, modifiee = writer.set_checkbox(note, 1, True)
+
+    assert texte == "relire le texte"
+    assert not modifiee
+    assert note.read_text(encoding="utf-8") == contenu
+
+
+def test_set_checkbox_verifie_le_libelle(writer, note):
+    with pytest.raises(VaultWriteError) as erreur:
+        writer.set_checkbox(note, 0, True, texte_attendu="autre chose")
+
+    assert "ne dit plus la même chose" in str(erreur.value)
+
+
+def test_set_checkbox_refuse_un_rang_hors_limites(writer, note):
+    with pytest.raises(VaultWriteError) as erreur:
+        writer.set_checkbox(note, 9, True)
+
+    assert "elle en compte 3" in str(erreur.value)
+
+
+def test_set_checkbox_sur_une_note_sans_frontmatter(
+    writer,
+    temp_vault_path,
+):
+    chemin = temp_vault_path / "07-Notes" / "Brute.md"
+
+    chemin.write_text("# Brute\n\n- [ ] un point\n", encoding="utf-8")
+
+    writer.set_checkbox(chemin, 0, True)
+
+    assert chemin.read_text(encoding="utf-8") == (
+        "# Brute\n\n- [x] un point\n"
+    )

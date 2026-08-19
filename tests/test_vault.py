@@ -16,14 +16,24 @@ from core.obsidian.repository import ObsidianRepository
 from core.obsidian.vault import ObsidianVault
 
 
-TYPES_CONNUS = ("task", "project", "collaborator")
+TYPES_CONNUS = (
+    "task",
+    "project",
+    "collaborator",
+    "knowledge",
+    "note",
+    "journal",
+)
 
 # Types présents dans le Vault que l'application ne lit pas encore.
 # Ils sont légitimes — leurs conventions sont écrites dans
 # 03-Documentation — mais rien ne les affiche pour l'instant. Les
 # retirer de cette liste au fur et à mesure qu'ils sont branchés :
 # le test redeviendra alors un vrai garde-fou pour eux.
-TYPES_PAS_ENCORE_LUS = ("documentation", "knowledge", "note", "journal")
+#
+# `documentation` est le dernier : ces notes sont les conventions
+# elles-mêmes, elles se lisent dans Obsidian.
+TYPES_PAS_ENCORE_LUS = ("documentation",)
 
 
 @pytest.fixture
@@ -71,6 +81,40 @@ def test_toutes_les_fiches_se_construisent(
     for task in repository.get_tasks():
         assert task.name
         assert task.status
+
+
+def test_les_connaissances_et_notes_se_construisent(
+    repository: ObsidianRepository,
+):
+    """Les deux types branchés doivent produire des modèles utilisables.
+
+    Le test reste vrai sur une base vide : c'est l'état du Vault au
+    moment du branchement, et il ne doit pas être une condition
+    d'échec.
+    """
+    for knowledge in repository.get_knowledge():
+        assert knowledge.name
+        assert isinstance(knowledge.tags, tuple)
+
+    for note in repository.get_notes():
+        assert note.name
+
+
+def test_le_journal_est_lisible(repository: ObsidianRepository):
+    """Le journal se trouve par son type, jamais par son nom."""
+    from core.services.journal import JournalService
+
+    service = JournalService(repository)
+
+    try:
+        chemin = service.chemin()
+    except Exception:
+        pytest.skip("aucune note « type: journal » dans le Vault")
+
+    assert chemin.suffix == ".md"
+
+    for jour in service.jours():
+        assert jour.titre
 
 
 def test_les_dates_sont_normalisees(

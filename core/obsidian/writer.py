@@ -27,6 +27,7 @@ from pathlib import Path
 import yaml
 
 from core.obsidian.vault import ObsidianVault
+from core.utils.markdown import ecrire_case, lire_cases
 from core.utils.text import normalize
 
 
@@ -670,10 +671,208 @@ class VaultWriter:
             file_path.name,
         )
 
+    def append_bullet_to_section(
+        self,
+        file_path: Path,
+        section: str,
+        bullet: str,
+    ) -> None:
+        """Ajoute une puce **à la fin** d'une section.
+
+        `prepend_to_section` insère en tête, ce qui convient aux
+        historiques rangés du plus récent au plus ancien. Le journal
+        fait l'inverse : le geste décrit par les conventions est
+        « `Ctrl + Fin`, écrire une ligne », donc on écrit à la suite.
+
+        Les emplacements vides laissés par le gabarit du jour — la
+        puce « - » que Templater dépose sous chaque nouvelle date —
+        sont remplacés plutôt que doublés. Ce n'est pas une ligne du
+        journal, c'est un endroit où écrire.
+        """
+        file_path = self._check_writable(file_path)
+
+        original_content = file_path.read_text(encoding="utf-8")
+
+        lines = original_content.splitlines(keepends=True)
+
+        heading_index = _find_heading(lines, section)
+
+        if heading_index is None:
+            raise VaultWriteError(
+                f"Section « {section} » introuvable dans "
+                f"{file_path.name}."
+            )
+
+        section_end = _find_section_end(lines, heading_index)
+
+        # On recule sur les lignes vides et les puces sans texte qui
+        # terminent la section : la nouvelle puce prend leur place.
+        fin = section_end
+
+        while fin > heading_index + 1 and _est_un_emplacement_vide(
+            lines[fin - 1]
+        ):
+            fin -= 1
+
+        bloc = [bullet.rstrip("\n") + "\n"]
+
+        if fin == heading_index + 1:
+            # Rien entre le titre et la puce : le Vault sépare
+            # toujours les deux par une ligne vide.
+            bloc.insert(0, "\n")
+
+        if section_end < len(lines):
+            # Une section suit : elle a besoin de sa ligne vide.
+            bloc.append("\n")
+
+        lines[fin:section_end] = bloc
+
+        self._write_and_validate(
+            file_path,
+            "".join(lines),
+            original_content,
+            expect_frontmatter=_has_frontmatter(original_content),
+        )
+
+        logger.info(
+            "Puce ajoutée en fin de « %s » dans %s",
+            section,
+            file_path.name,
+        )
+
+    def append_block(self, file_path: Path, block: str) -> None:
+        """Ajoute un bloc à la fin de la note.
+
+        Sert à ouvrir la section d'un nouveau jour dans le journal :
+        les jours s'y empilent du plus ancien au plus récent, pour
+        que `Ctrl + Fin` amène directement là où l'on écrit.
+        """
+        file_path = self._check_writable(file_path)
+
+        original_content = file_path.read_text(encoding="utf-8")
+
+        nouveau = (
+            original_content.rstrip("\n")
+            + "\n\n"
+            + block.rstrip("\n")
+            + "\n"
+        )
+
+        self._write_and_validate(
+            file_path,
+            nouveau,
+            original_content,
+            expect_frontmatter=_has_frontmatter(original_content),
+        )
+
+        logger.info("Bloc ajouté en fin de %s", file_path.name)
+
+    def set_checkbox(
+        self,
+        file_path: Path,
+        index: int,
+        cochee: bool,
+        texte_attendu: str | None = None,
+    ) -> tuple[str, bool]:
+        """Coche ou décoche la case de rang `index`.
+
+        Renvoie le libellé de la case et si le fichier a été écrit.
+
+        Une seule ligne change, et d'un seul caractère. Le reste du
+        fichier — indentation, texte, fins de ligne — est conservé
+        octet pour octet.
+
+        `texte_attendu` est le garde-fou : l'interface envoie le
+        libellé qu'elle affichait, et l'écriture est refusée s'il ne
+        correspond plus. Sans lui, une note réorganisée dans Obsidian
+        entre l'affichage et le clic ferait cocher la mauvaise case —
+        et rien ne le signalerait.
+        """
+        file_path = self._check_writable(file_path)
+
+        original_content = file_path.read_text(encoding="utf-8")
+
+        lines = original_content.splitlines(keepends=True)
+
+        depart = 0
+
+        if _has_frontmatter(original_content):
+            _, fermeture = self._locate_frontmatter(lines, file_path)
+            depart = fermeture + 1
+
+        cases = lire_cases(original_content, depart=depart)
+
+        if not 0 <= index < len(cases):
+            raise VaultWriteError(
+                f"La note {file_path.name} n'a pas de case n°"
+                f"{index + 1} : elle en compte {len(cases)}."
+            )
+
+        case = cases[index]
+
+        if (
+            texte_attendu is not None
+            and normalize(case.texte) != normalize(texte_attendu)
+        ):
+            raise VaultWriteError(
+                "Cette case ne dit plus la même chose : « "
+                f"{case.texte} » au lieu de « {texte_attendu} ». "
+                "Recharge la page avant de réessayer."
+            )
+
+        if case.cochee == cochee:
+            # Rien à écrire : l'état demandé est déjà en place. Un
+            # double-clic ne doit pas produire une écriture inutile,
+            # ni un événement de plus pour Obsidian.
+            return case.texte, False
+
+        lines[case.ligne] = ecrire_case(lines[case.ligne], cochee)
+
+        def verifier(_frontmatter: dict) -> None:
+            relues = lire_cases(
+                file_path.read_text(encoding="utf-8"),
+                depart=depart,
+            )
+
+            if len(relues) != len(cases):
+                raise VaultWriteError(
+                    "Le nombre de cases a changé après écriture."
+                )
+
+            if relues[index].cochee is not cochee:
+                raise VaultWriteError(
+                    f"La case « {case.texte} » n'a pas pris l'état "
+                    "demandé."
+                )
+
+        self._write_and_validate(
+            file_path,
+            "".join(lines),
+            original_content,
+            expect_frontmatter=_has_frontmatter(original_content),
+            verify=verifier,
+        )
+
+        logger.info(
+            "Case %d de %s : %s",
+            index + 1,
+            file_path.name,
+            "cochée" if cochee else "décochée",
+        )
+
+        return case.texte, True
+
 
 # =====================================================
 # Utilitaires
 # =====================================================
+
+
+def _est_un_emplacement_vide(line: str) -> bool:
+    """Ligne vide, ou puce sans texte laissée par un gabarit."""
+    nettoyee = line.strip()
+
+    return nettoyee in ("", "-", "*", "+")
 
 
 def rendre_visible(file_path: Path) -> bool:

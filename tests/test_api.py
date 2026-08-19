@@ -461,7 +461,13 @@ def test_graph_renvoie_noeuds_et_liens(client):
 
     types = {n["type"] for n in g["noeuds"]}
 
-    assert types <= {"task", "project", "collaborator"}
+    assert types <= {
+        "task",
+        "project",
+        "collaborator",
+        "knowledge",
+        "note",
+    }
 
     for noeud in g["noeuds"]:
         for champ in ("id", "type", "nom", "statut", "poids"):
@@ -538,6 +544,11 @@ def test_les_isoles_sont_bien_sans_lien(client):
 def test_le_poids_d_un_projet_compte_ses_taches(client):
     g = client.get("/api/graph?inclure_terminees=true").json()
 
+    # Les notes de projet se rattachent par le même champ, donc par
+    # le même genre de lien. Le poids d'un projet, lui, reste le
+    # nombre de ses tâches : c'est ce qu'annonce son étiquette.
+    taches = {n["id"] for n in g["noeuds"] if n["type"] == "task"}
+
     for noeud in g["noeuds"]:
         if noeud["type"] != "project":
             continue
@@ -545,7 +556,9 @@ def test_le_poids_d_un_projet_compte_ses_taches(client):
         attendu = sum(
             1
             for l in g["liens"]
-            if l["genre"] == "projet" and l["vers"] == noeud["id"]
+            if l["genre"] == "projet"
+            and l["vers"] == noeud["id"]
+            and l["de"] in taches
         )
 
         assert noeud["poids"] == attendu
@@ -558,9 +571,454 @@ def test_les_identifiants_du_graph_ouvrent_les_fiches(client):
         "task": "tasks",
         "project": "projects",
         "collaborator": "collaborators",
+        "knowledge": "knowledge",
+        "note": "notes",
     }
 
     for noeud in g["noeuds"][:10]:
         reponse = client.get(f"/api/{routes[noeud['type']]}/{noeud['id']}")
 
         assert reponse.status_code == 200
+
+
+# =====================================================
+# Connaissances (§16)
+# =====================================================
+
+
+def test_liste_des_connaissances(client):
+    d = client.get("/api/knowledge").json()
+
+    assert d["total"] == d["total_base"] == len(d["items"])
+
+    premiere = d["items"][0]
+
+    for champ in ("id", "name", "categorie", "domaine", "maturite", "tags"):
+        assert champ in premiere
+
+
+def test_l_arborescence_accompagne_la_liste(client):
+    d = client.get("/api/knowledge").json()
+
+    domaines = {b["domaine"] for b in d["arborescence"]}
+
+    assert {"Cybersecurity", "Outils", "References"} <= domaines
+
+    cyber = next(
+        b for b in d["arborescence"] if b["domaine"] == "Cybersecurity"
+    )
+
+    assert cyber["total"] == 2
+    assert {"Web", ""} == {s["sujet"] for s in cyber["sujets"]}
+
+
+def test_les_compteurs_ne_suivent_pas_le_filtre(client):
+    """Un filtre qui vide les autres filtres enferme l'utilisateur."""
+    tout = client.get("/api/knowledge").json()
+    filtre = client.get("/api/knowledge?domaine=Outils").json()
+
+    assert filtre["total"] == 1
+    assert filtre["total_base"] == tout["total_base"]
+    assert filtre["arborescence"] == tout["arborescence"]
+    assert filtre["tags"] == tout["tags"]
+
+
+def test_filtres_des_connaissances(client):
+    par_categorie = client.get("/api/knowledge?categorie=outil").json()
+
+    assert [n["name"] for n in par_categorie["items"]] == ["ffuf"]
+
+    par_maturite = client.get("/api/knowledge?maturite=stable").json()
+
+    assert {n["name"] for n in par_maturite["items"]} == {
+        "XSS stockee",
+        "Ports courants",
+    }
+
+
+def test_le_filtre_par_tag_est_tolerant_aux_accents(client):
+    d = client.get("/api/knowledge?tag=XSS").json()
+
+    assert [n["name"] for n in d["items"]] == ["XSS stockee"]
+
+
+def test_le_domaine_effectif_vient_du_dossier_si_besoin(client):
+    d = client.get("/api/knowledge").json()
+
+    ports = next(n for n in d["items"] if n["name"] == "Ports courants")
+
+    assert ports["domaine"] == "References"
+    assert ports["domaine_declare"] is None
+
+
+def test_une_note_mal_rangee_est_signalee(client):
+    d = client.get("/api/knowledge").json()
+
+    osi = next(n for n in d["items"] if n["name"] == "Modele OSI")
+
+    assert osi["range_correctement"] is False
+    assert osi["domaine_declare"] == "Cybersecurity"
+
+    xss = next(n for n in d["items"] if n["name"] == "XSS stockee")
+
+    assert xss["range_correctement"] is True
+
+
+def test_fiche_connaissance_et_ses_liens(client):
+    liste = client.get("/api/knowledge").json()["items"]
+
+    xss = next(n for n in liste if n["name"] == "XSS stockee")
+
+    fiche = client.get(f"/api/knowledge/{xss['id']}").json()
+
+    assert "En bref" in fiche["body"]
+    assert [l["nom"] for l in fiche["liens"]] == ["ffuf"]
+    assert fiche["liens"][0]["type"] == "knowledge"
+    assert fiche["liens_morts"] == []
+
+
+def test_un_lien_sans_cible_est_signale(client):
+    liste = client.get("/api/knowledge").json()["items"]
+
+    ffuf = next(n for n in liste if n["name"] == "ffuf")
+
+    fiche = client.get(f"/api/knowledge/{ffuf['id']}").json()
+
+    assert fiche["liens_morts"] == ["Note qui n existe pas"]
+
+
+def test_une_tache_n_est_pas_une_connaissance(client):
+    tache = client.get("/api/tasks").json()["items"][0]
+
+    assert client.get(f"/api/knowledge/{tache['id']}").status_code == 404
+
+
+# =====================================================
+# Notes de projet
+# =====================================================
+
+
+def test_liste_des_notes(client):
+    d = client.get("/api/notes").json()
+
+    assert {n["name"] for n in d["items"]} == {
+        "Points Alpha",
+        "Idees en vrac",
+    }
+
+    assert d["archivees"] == 1
+
+
+def test_les_notes_archivees_sont_masquees_par_defaut(client):
+    avec = client.get("/api/notes?archivees=true").json()
+
+    assert "Ancienne note" in {n["name"] for n in avec["items"]}
+
+
+def test_les_points_voyagent_avec_la_liste(client):
+    d = client.get("/api/notes").json()
+
+    note = next(n for n in d["items"] if n["name"] == "Points Alpha")
+
+    assert [p["texte"] for p in note["points"]] == [
+        "verifier le rendu",
+        "relire le texte",
+        "sous-point indente",
+    ]
+
+    assert note["progression"]["termine"] == 1
+    assert note["progression"]["total"] == 3
+
+
+def test_filtre_des_notes_par_projet(client):
+    d = client.get("/api/notes?project=projet alpha").json()
+
+    assert [n["name"] for n in d["items"]] == ["Points Alpha"]
+
+
+def test_fiche_note(client):
+    liste = client.get("/api/notes").json()["items"]
+
+    fiche = client.get(f"/api/notes/{liste[0]['id']}").json()
+
+    assert "body" in fiche
+    assert "points" in fiche
+    assert "version" in fiche
+
+
+def test_les_notes_d_un_projet_sont_dans_son_dashboard(client):
+    projets = client.get("/api/projects").json()["items"]
+
+    alpha = next(p for p in projets if p["name"] == "Projet Alpha")
+
+    fiche = client.get(f"/api/projects/{alpha['id']}").json()
+
+    # L'archivée est écartée, comme partout ailleurs.
+    assert [n["name"] for n in fiche["notes"]] == ["Points Alpha"]
+    assert fiche["notes"][0]["points"]
+
+
+# =====================================================
+# Cocher un point
+# =====================================================
+
+
+def note_a_trois_points(client) -> dict:
+    """La note du Vault temporaire qui porte trois cases.
+
+    La liste est triée par nom : « Idees en vrac » y passe avant.
+    On désigne donc la note visée par son nom, pas par son rang.
+    """
+    return next(
+        n
+        for n in client.get("/api/notes").json()["items"]
+        if n["name"] == "Points Alpha"
+    )
+
+
+def test_cocher_un_point(client):
+    note = note_a_trois_points(client)
+
+    reponse = client.patch(
+        f"/api/notes/{note['id']}/points/0",
+        json={
+            "cochee": True,
+            "texte": note["points"][0]["texte"],
+            "version": note["version"],
+        },
+    )
+
+    assert reponse.status_code == 200
+    assert reponse.json()["progression"]["termine"] == 2
+    assert reponse.json()["points"][0]["cochee"] is True
+
+
+def test_decocher_un_point(client):
+    note = note_a_trois_points(client)
+
+    reponse = client.patch(
+        f"/api/notes/{note['id']}/points/1",
+        json={"cochee": False, "texte": note["points"][1]["texte"]},
+    )
+
+    assert reponse.json()["points"][1]["cochee"] is False
+
+
+def test_un_libelle_perime_repond_409(client):
+    """La note a bougé dans Obsidian : on ne coche pas au hasard."""
+    note = note_a_trois_points(client)
+
+    reponse = client.patch(
+        f"/api/notes/{note['id']}/points/0",
+        json={"cochee": True, "texte": "autre chose"},
+    )
+
+    assert reponse.status_code == 409
+
+
+def test_un_rang_inexistant_repond_404(client):
+    note = note_a_trois_points(client)
+
+    reponse = client.patch(
+        f"/api/notes/{note['id']}/points/42",
+        json={"cochee": True},
+    )
+
+    assert reponse.status_code == 404
+
+
+def test_une_version_perimee_repond_409(client):
+    note = note_a_trois_points(client)
+
+    reponse = client.patch(
+        f"/api/notes/{note['id']}/points/0",
+        json={"cochee": True, "version": 1.0},
+    )
+
+    assert reponse.status_code == 409
+
+
+def test_cocher_met_la_date_a_jour(client):
+    note = note_a_trois_points(client)
+
+    client.patch(
+        f"/api/notes/{note['id']}/points/0",
+        json={"cochee": True},
+    )
+
+    import datetime
+
+    apres = client.get(f"/api/notes/{note['id']}").json()
+
+    assert apres["mis_a_jour"] == datetime.date.today().isoformat()
+
+
+# =====================================================
+# Journal
+# =====================================================
+
+
+def test_lecture_du_journal(client):
+    d = client.get("/api/journal").json()
+
+    assert d["note"] == "Journal"
+    assert d["total_jours"] == 2
+    assert [j["titre"] for j in d["jours"]] == ["2026-08-19", "2026-08-18"]
+    assert d["jours"][1]["lignes"] == [
+        "rappeler le client",
+        "verifier postgres",
+    ]
+
+
+def test_capture_dans_le_journal(client):
+    import datetime
+
+    reponse = client.post(
+        "/api/journal",
+        json={"text": "rappeler le client pour le devis"},
+    )
+
+    assert reponse.status_code == 201
+    assert reponse.json()["jour"] == datetime.date.today().isoformat()
+
+    jours = client.get("/api/journal").json()["jours"]
+
+    assert "rappeler le client pour le devis" in jours[0]["lignes"]
+
+
+def test_une_capture_vide_est_refusee(client):
+    assert client.post("/api/journal", json={"text": "  "}).status_code == 400
+
+
+def test_sans_journal_la_lecture_repond_404(client, temp_vault):
+    (temp_vault.path / "07-Notes" / "Journal.md").unlink()
+
+    reponse = client.get("/api/journal")
+
+    assert reponse.status_code == 404
+    assert "type: journal" in reponse.json()["detail"]
+
+
+# =====================================================
+# Recherche et métadonnées
+# =====================================================
+
+
+def test_la_recherche_rend_les_nouveaux_types(client):
+    d = client.get("/api/search?q=xss").json()
+
+    assert [n["name"] for n in d["knowledge"]] == ["XSS stockee"]
+    assert d["total"] >= 1
+
+    notes = client.get("/api/search?q=idees").json()
+
+    assert [n["name"] for n in notes["notes"]] == ["Idees en vrac"]
+
+
+def test_une_recherche_vide_annonce_tous_les_groupes(client):
+    d = client.get("/api/search?q=").json()
+
+    assert d["knowledge"] == []
+    assert d["notes"] == []
+
+
+def test_meta_annonce_les_axes_des_connaissances(client):
+    d = client.get("/api/meta").json()
+
+    assert "technique" in d["categories"]
+    assert d["maturites"] == ["graine", "brouillon", "stable"]
+
+
+# =====================================================
+# Graph
+# =====================================================
+
+
+def test_les_liens_des_connaissances_sont_dans_le_graph(client):
+    g = client.get("/api/graph").json()
+
+    noms = {n["id"]: n["nom"] for n in g["noeuds"]}
+
+    liens = {
+        (noms[l["de"]], noms[l["vers"]])
+        for l in g["liens"]
+        if l["genre"] == "lien"
+    }
+
+    assert ("XSS stockee", "ffuf") in liens
+    assert ("ffuf", "XSS stockee") in liens
+    assert ("Points Alpha", "XSS stockee") in liens
+
+
+def test_une_note_est_reliee_a_son_projet(client):
+    g = client.get("/api/graph").json()
+
+    noms = {n["id"]: n["nom"] for n in g["noeuds"]}
+
+    liens = {
+        (noms[l["de"]], noms[l["vers"]])
+        for l in g["liens"]
+        if l["genre"] == "projet"
+    }
+
+    assert ("Points Alpha", "Projet Alpha") in liens
+
+
+def test_les_connaissances_peuvent_etre_ecartees(client):
+    g = client.get("/api/graph?inclure_connaissances=false").json()
+
+    types = {n["type"] for n in g["noeuds"]}
+
+    assert "knowledge" not in types
+    assert "note" in types
+
+    # Aucun lien ne doit pointer vers un nœud absent du dessin.
+    presents = {n["id"] for n in g["noeuds"]}
+
+    for lien in g["liens"]:
+        assert lien["de"] in presents
+        assert lien["vers"] in presents
+
+
+def test_une_connaissance_isolee_pese_zero(client):
+    g = client.get("/api/graph").json()
+
+    isoles = set(g["isoles"])
+
+    osi = next(n for n in g["noeuds"] if n["nom"] == "Modele OSI")
+
+    assert osi["id"] in isoles
+    assert osi["poids"] == 0
+
+
+def test_une_note_archivee_n_est_pas_dans_le_graph(client):
+    g = client.get("/api/graph").json()
+
+    assert "Ancienne note" not in {n["nom"] for n in g["noeuds"]}
+
+
+def test_une_note_dont_le_projet_n_existe_pas_est_signalee(
+    client,
+    temp_vault,
+):
+    """Le contrôle que les conventions confient explicitement à l'app.
+
+    Dataview ne sait pas confronter deux ensembles de notes dans une
+    même requête : c'est ici que la faute de frappe se voit.
+    """
+    (temp_vault.path / "07-Notes" / "Fautive.md").write_text(
+        '---\ntype: note\nproject: "Projet Alfa"\n---\n\n# Fautive\n',
+        encoding="utf-8",
+    )
+
+    items = client.get("/api/notes").json()["items"]
+
+    fautive = next(n for n in items if n["name"] == "Fautive")
+    juste = next(n for n in items if n["name"] == "Points Alpha")
+    libre = next(n for n in items if n["name"] == "Idees en vrac")
+
+    assert fautive["orpheline"] is True
+    assert juste["orpheline"] is False
+
+    # Une note sans projet n'est pas orpheline : elle n'en dépend pas.
+    assert libre["orpheline"] is False

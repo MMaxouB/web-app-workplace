@@ -2,7 +2,13 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from core.obsidian.models import Collaborator, Project, Task
+from core.obsidian.models import (
+    Collaborator,
+    Knowledge,
+    Note,
+    Project,
+    Task,
+)
 from core.obsidian.vault import ObsidianVault
 from core.utils.text import contains, matches_exactly
 
@@ -100,6 +106,24 @@ def count_collaborators(
 
 
 @dataclass(frozen=True)
+class VaultContents:
+    """Toutes les notes typées du Vault, triées par type.
+
+    Renvoyé par `_collect_all()`. Un objet nommé plutôt qu'un
+    n-uplet : le Vault a gagné deux types de notes après les trois
+    fiches d'origine, et il en gagnera d'autres. Ajouter une liste
+    ne doit pas obliger à retoucher chaque appelant pour décaler un
+    dépaquetage.
+    """
+
+    projects: list[Project] = field(default_factory=list)
+    tasks: list[Task] = field(default_factory=list)
+    collaborators: list[Collaborator] = field(default_factory=list)
+    knowledge: list[Knowledge] = field(default_factory=list)
+    notes: list[Note] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class Workspace:
     """Photographie du Vault à un instant donné.
 
@@ -167,6 +191,8 @@ class SearchResults:
         default_factory=list
     )
     tasks: list[Task] = field(default_factory=list)
+    knowledge: list[Knowledge] = field(default_factory=list)
+    notes: list[Note] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -174,6 +200,8 @@ class SearchResults:
             len(self.projects)
             + len(self.collaborators)
             + len(self.tasks)
+            + len(self.knowledge)
+            + len(self.notes)
         )
 
     @property
@@ -213,20 +241,20 @@ class ObsidianRepository:
 
         return collected
 
-    def _collect_all(
-        self,
-    ) -> tuple[list[Project], list[Task], list[Collaborator]]:
+    def _collect_all(self) -> VaultContents:
         """Lit le Vault une seule fois et trie les notes par type.
 
-        `_collect` ne rend qu'un type : l'appeler trois fois relit
-        et re-parse chaque note trois fois. Sur le Vault réel, le
-        tableau de bord passait ainsi de 18 à 54 ms pour un résultat
-        identique. Tout ce qui a besoin de plusieurs types à la fois
-        passe désormais par ici.
+        `_collect` ne rend qu'un type : l'appeler une fois par type
+        relit et re-parse chaque note autant de fois. Sur le Vault
+        réel, le tableau de bord passait ainsi de 18 à 54 ms pour un
+        résultat identique. Tout ce qui a besoin de plusieurs types
+        à la fois passe donc par ici.
+
+        Les types inconnus sont ignorés sans bruit : c'est ce qui a
+        permis aux connaissances et aux notes d'exister dans le
+        Vault des semaines avant que l'application ne les lise.
         """
-        projects: list[Project] = []
-        tasks: list[Task] = []
-        collaborators: list[Collaborator] = []
+        contenu = VaultContents()
 
         for file_path in self._data_files():
             data = self.vault.safe_read_frontmatter(file_path)
@@ -236,22 +264,30 @@ class ObsidianRepository:
 
             match data.get("type"):
                 case "project":
-                    projects.append(
+                    contenu.projects.append(
                         self.vault.build_project(data, file_path)
                     )
                 case "task":
-                    tasks.append(
+                    contenu.tasks.append(
                         self.vault.build_task(data, file_path)
                     )
                 case "collaborator":
-                    collaborators.append(
+                    contenu.collaborators.append(
                         self.vault.build_collaborator(
                             data,
                             file_path,
                         )
                     )
+                case "knowledge":
+                    contenu.knowledge.append(
+                        self.vault.build_knowledge(data, file_path)
+                    )
+                case "note":
+                    contenu.notes.append(
+                        self.vault.build_note(data, file_path)
+                    )
 
-        return projects, tasks, collaborators
+        return contenu
 
     # =====================================================
     # Listes
@@ -273,6 +309,18 @@ class ObsidianRepository:
         return [
             self.vault.build_task(data, file_path)
             for data, file_path in self._collect("task")
+        ]
+
+    def get_knowledge(self) -> list[Knowledge]:
+        return [
+            self.vault.build_knowledge(data, file_path)
+            for data, file_path in self._collect("knowledge")
+        ]
+
+    def get_notes(self) -> list[Note]:
+        return [
+            self.vault.build_note(data, file_path)
+            for data, file_path in self._collect("note")
         ]
 
     # =====================================================
@@ -393,24 +441,47 @@ class ObsidianRepository:
             ]
         )
 
+    def get_notes_for_project(self, project: Project) -> list[Note]:
+        """Notes de projet rattachées à un projet.
+
+        Même règle que pour les tâches : le champ `project` est du
+        texte libre, saisi depuis un menu dans Obsidian mais libre
+        malgré tout. On le confronte au nom du projet *et* à son nom
+        de fichier, après normalisation.
+        """
+        return sorted(
+            [
+                note
+                for note in self.get_notes()
+                if belongs_to(note, project)
+            ],
+            key=lambda note: note.name.casefold(),
+        )
+
     # =====================================================
     # Vue d'ensemble
     # =====================================================
 
     def workspace(self) -> Workspace:
         """Tous les compteurs du Vault, en un seul parcours."""
-        projects, tasks, collaborators = self._collect_all()
+        contenu = self._collect_all()
 
         return Workspace(
-            projects=count_projects(projects),
-            tasks=count_tasks(tasks),
+            projects=count_projects(contenu.projects),
+            tasks=count_tasks(contenu.tasks),
             urgent=sort_tasks(
-                [task for task in tasks if is_urgent(task)]
+                [
+                    task
+                    for task in contenu.tasks
+                    if is_urgent(task)
+                ]
             ),
-            collaborators=count_collaborators(collaborators),
-            all_projects=projects,
-            all_tasks=tasks,
-            all_collaborators=collaborators,
+            collaborators=count_collaborators(
+                contenu.collaborators
+            ),
+            all_projects=contenu.projects,
+            all_tasks=contenu.tasks,
+            all_collaborators=contenu.collaborators,
         )
 
     # =====================================================
@@ -420,7 +491,11 @@ class ObsidianRepository:
     def search(self, query: str) -> SearchResults:
         results = SearchResults(query=query)
 
-        projects, tasks, collaborators = self._collect_all()
+        contenu = self._collect_all()
+
+        projects = contenu.projects
+        tasks = contenu.tasks
+        collaborators = contenu.collaborators
 
         for project in projects:
             if any(
@@ -461,6 +536,26 @@ class ObsidianRepository:
                 )
             ):
                 results.tasks.append(task)
+
+        for note in contenu.knowledge:
+            valeurs = (
+                note.name,
+                note.categorie,
+                note.domaine,
+                note.sujet,
+                note.maturite,
+                *note.tags,
+            )
+
+            if any(contains(valeur, query) for valeur in valeurs):
+                results.knowledge.append(note)
+
+        for note in contenu.notes:
+            if any(
+                contains(valeur, query)
+                for valeur in (note.name, note.sujet, note.project)
+            ):
+                results.notes.append(note)
 
         results.tasks = sort_tasks(results.tasks)
 
@@ -532,15 +627,20 @@ def same_reference(value: str | None, label: str | None) -> bool:
 _same_reference = same_reference
 
 
-def belongs_to(task: Task, project: Project) -> bool:
-    """La tâche est-elle rattachée à ce projet ?
+def belongs_to(fiche: Task | Note, project: Project) -> bool:
+    """Cette note est-elle rattachée à ce projet ?
 
-    Règle unique, partagée par le Repository et les statistiques :
-    le champ `project` d'une tâche est du texte libre, il faut le
-    confronter au nom du projet *et* à son nom de fichier.
+    Règle unique, partagée par le Repository, les statistiques et
+    les notes de projet : le champ `project` est du texte libre, il
+    faut le confronter au nom du projet *et* à son nom de fichier.
+
+    Les tâches et les notes de `07-Notes/` portent le même champ et
+    obéissent donc à la même règle — c'est ce qui rapproche « DB
+    templates web » de `DB_templates-web.md`, quel que soit le type
+    de la note qui le cite.
     """
     return any(
-        same_reference(task.project, label)
+        same_reference(fiche.project, label)
         for label in (project.name, project.filename)
     )
 

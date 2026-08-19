@@ -19,6 +19,7 @@ plutôt que d'écraser silencieusement ce qui vient d'être tapé dans
 Obsidian.
 """
 
+import datetime
 import logging
 from pathlib import Path
 
@@ -31,8 +32,16 @@ from core.services.collaborators import (
     CollaboratorError,
     CollaboratorService,
 )
+from core.services.connaissances import CATEGORIES, MATURITES
+from core.services.journal import JournalError, JournalService
 from core.services.notes import NoteError, NoteService
+from core.services.notes_projet import (
+    NoteProjetError,
+    NoteProjetService,
+    points,
+)
 from core.services.projects import ProjectError, ProjectService
+from core.utils.text import normalize
 from core.services.tasks import (
     STATUS_FOLDERS,
     TaskError,
@@ -95,6 +104,24 @@ def _services():
     )
 
     return taches, projets, collaborateurs, notes
+
+
+def _service_journal() -> JournalService:
+    """Le journal a son propre service : il ne partage rien avec les
+    trois fiches, ni tableau à synchroniser, ni historique à tenir."""
+    vault, repository, _ = _contexte()
+
+    from core.obsidian.writer import VaultWriter
+
+    return JournalService(repository, VaultWriter(vault))
+
+
+def _service_notes_projet() -> NoteProjetService:
+    vault, repository, _ = _contexte()
+
+    from core.obsidian.writer import VaultWriter
+
+    return NoteProjetService(repository, VaultWriter(vault))
 
 
 def _resoudre(note_id: str, lecteur):
@@ -166,6 +193,8 @@ def _erreurs(fonction):
         ProjectError,
         CollaboratorError,
         NoteError,
+        NoteProjetError,
+        JournalError,
     ) as error:
         raise HTTPException(400, str(error)) from error
     except VaultWriteError as error:
@@ -182,7 +211,11 @@ def meta():
     """Valeurs acceptées, pour que le frontend ne les invente pas."""
     _, repository, _ = _contexte()
 
-    projects, tasks, collaborators = repository._collect_all()
+    contenu = repository._collect_all()
+
+    projects = contenu.projects
+    tasks = contenu.tasks
+    collaborators = contenu.collaborators
 
     return {
         "statuts": list(VALID_STATUSES),
@@ -191,6 +224,11 @@ def meta():
         "plateformes": list(VALID_PLATFORMS),
         "delais": list(DEADLINE_OFFSETS),
         "dossiers": STATUS_FOLDERS,
+        # Axes de la base de connaissances. L'interface ne les
+        # invente pas : ils viennent du template Templater, et les
+        # deux doivent proposer exactement les mêmes valeurs.
+        "categories": list(CATEGORIES),
+        "maturites": list(MATURITES),
         "projets": sorted(projet.name for projet in projects),
         "collaborateurs": sorted(
             collaborateur.name for collaborateur in collaborators
@@ -702,3 +740,102 @@ def ajouter_note(genre: str, note_id: str, corps: dict = Body(...)):
         "cible": getattr(resultat, "name", cible.name),
         "version": version_de(cible.path),
     }
+
+
+# =====================================================
+# Journal
+# =====================================================
+
+
+@router.post("/api/journal", status_code=201)
+def capturer_dans_le_journal(corps: dict = Body(...)):
+    """Ajoute une ligne à la journée en cours (§19, capture rapide).
+
+    Aucun champ à choisir, aucun dossier à décider : c'est tout
+    l'intérêt du journal, et l'API ne demande donc qu'un texte. La
+    journée est ouverte à la fin du fichier si elle n'existe pas
+    encore, comme le fait le gabarit dans Obsidian.
+    """
+    texte = (corps.get("text") or "").strip()
+
+    if not texte:
+        raise HTTPException(400, "La ligne est vide.")
+
+    service = _service_journal()
+
+    ligne = _erreurs(lambda: service.capturer(texte))
+
+    logger.info("Ligne ajoutée au journal via l'API.")
+
+    return {
+        "ok": True,
+        "ligne": ligne,
+        "jour": datetime.date.today().isoformat(),
+    }
+
+
+# =====================================================
+# Points d'une note de projet
+# =====================================================
+
+
+@router.patch("/api/notes/{note_id}/points/{index}")
+def basculer_un_point(
+    note_id: str,
+    index: int,
+    corps: dict = Body(...),
+):
+    """Coche ou décoche un point d'une note.
+
+    Le client renvoie le libellé qu'il affichait. S'il ne correspond
+    plus, on répond 409 plutôt que de cocher la mauvaise ligne : une
+    note réorganisée dans Obsidian décale ses points, et rien ne le
+    signalerait autrement.
+    """
+    from api.app import _note_avec_points
+
+    vault, _, _ = _contexte()
+
+    note = _resoudre(note_id, vault.read_note)
+
+    _verifier_version(note.path, corps.get("version"))
+
+    cases = points(vault.read_body(note.path))
+
+    if not 0 <= index < len(cases):
+        raise HTTPException(
+            404,
+            f"Cette note n'a pas de point n°{index + 1} : "
+            f"elle en compte {len(cases)}.",
+        )
+
+    attendu = corps.get("texte")
+
+    if attendu is not None and normalize(cases[index].texte) != normalize(
+        attendu
+    ):
+        raise HTTPException(
+            409,
+            "Ce point ne dit plus la même chose qu'à l'affichage "
+            f"(« {cases[index].texte} »). Recharge la page pour voir "
+            "la version actuelle avant de réessayer.",
+        )
+
+    cochee = bool(corps.get("cochee", True))
+
+    service = _service_notes_projet()
+
+    _, avertissements = _erreurs(
+        lambda: service.basculer(
+            note,
+            index,
+            cochee,
+            texte_attendu=attendu,
+        )
+    )
+
+    donnees = _note_avec_points(vault.read_note(note.path))
+    donnees["version"] = version_de(note.path)
+    donnees["avertissements"] = avertissements
+
+    return donnees
