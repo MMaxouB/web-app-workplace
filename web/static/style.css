@@ -1927,6 +1927,13 @@ p .sep { margin: 0 6px; opacity: .45; }
   gap: 16px;
 }
 
+/* La colonne de gauche (le contenu de la note) fixe la hauteur de
+   la ligne de grille ; sans ça, la dernière carte de .pile s'arrête
+   à son contenu et laisse un bloc vide sous elle. */
+.pile > .carte:last-child {
+  flex: 1;
+}
+
 .carte-aparte {
   margin: 12px 0 0;
   font-size: 11.5px;
